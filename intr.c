@@ -12,16 +12,16 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/select.h>
-#include <sys/ioctl.h>
-#include <termios.h>
+
+#include "terminal.h"
 
 #define ARG_MAX 512
 
 /* TODO
  * - test & rename spawn()
  * - getline from fd
- * - raw mode and print only last X
- * - raw mode key utf-8 and ctrl and some specials
+ * - raw mode and print only last N
+ * - raw mode and SIGINT, SIGTERM...
  */
 
 typedef struct entry {
@@ -205,9 +205,9 @@ int main(int argc, char *argv[])
 	     *argv0,
 	     **arg[ARG_MAX];
 	int rw[2], wstatus, n = 0;
-	ssize_t r;
 	pid_t p[3];
 	_Bool mid = 0;
+	struct termios old;
 
 	(void)argc;
 
@@ -242,10 +242,12 @@ int main(int argc, char *argv[])
 		if (!strcmp(*argv, delim)) {
 			*argv = 0;
 			n++;
+			if (n >= ARG_MAX) {
+				err("error: too many commands\n");
+			}
 			argv++;
 			arg[n] = argv;
 			arg[n+1] = 0;
-			// TODO ARG_MAX
 		}
 		else if (!strcmp(*argv, subst)) {
 			*argv = s;
@@ -255,21 +257,41 @@ int main(int argc, char *argv[])
 
 	s[0] = 0;
 
-	char buf[512];
 	char *curr = s;
-	while ((r = read(0, curr, 1))) {
-		if (*curr == 'q') break;
-		curr++;
-		*curr = 0;
+	entry *H = 0, *L = 0;
+	raw(&old);
+	input I;
+	int utflen;
+	for (;;) {
+		I = get_input();
+		switch (I.t) {
+		case IT_NONE:
+		default:
+			break;
+		case IT_UTF8:
+			utflen = utf8_b2len(I.utf);
+			memcpy(curr, I.utf, utflen);
+			curr += utflen;
+			*curr = 0;
+			break;
+		case IT_SPEC:
+			break;
+		case IT_CTRL:
+			if (I.utf[0] == 'M' || I.utf[0] == 'J') goto end;
+			break;
+		}
 
 		spawn(rw, p, arg);
 		close(rw[1]); /* TODO */
-		while ((r = read(rw[0], buf, sizeof(buf)))) {
-			write(1, buf, r);
-		}
-		write(1, s, strlen(s));
+		read_entries(rw[0], &H, &L);
+		printf("\r%s                      ", s);
+		fflush(stdout);
 		wait(&wstatus);
 	}
+	end:
+	unraw(&old);
+	printf("\r");
+	fflush(stdout);
 
 	return 0;
 }
