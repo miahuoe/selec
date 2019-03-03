@@ -1,0 +1,275 @@
+#ifndef _DEFAULT_SOURCE
+	#define _DEFAULT_SOURCE
+#endif
+
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <unistd.h>
+#include <signal.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/select.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+
+#define ARG_MAX 512
+
+/* TODO
+ * - test & rename spawn()
+ * - getline from fd
+ * - raw mode and print only last X
+ * - raw mode key utf-8 and ctrl and some specials
+ */
+
+typedef struct entry {
+	struct entry *next;
+	struct entry *prev;
+	size_t L;
+	char str[];
+} entry;
+
+void err(const char *fmt, ...)
+{
+	va_list a;
+
+	va_start(a, fmt);
+	vfprintf(stderr, fmt, a);
+	va_end(a);
+	fflush(stderr);
+	exit(EXIT_FAILURE);
+}
+
+int spawn(int rw[2], pid_t *p, char **argv[])
+{
+	int pair[2], l;
+
+	/* pipe: [0] = read, [1] = write */
+	if (pipe(pair)) {
+		return -1;
+	}
+	l = pair[0];
+	rw[1] = pair[1];
+	while (*argv) {
+		if (pipe(pair) || (*p = fork()) == -1) { /* TODO vfork() ? */
+			return -1;
+		}
+		if (*p == 0) {
+			close(rw[0]);
+			close(rw[1]);
+
+			dup2(l, 0);
+
+			dup2(pair[1], 1);
+			close(pair[0]);
+
+			execvp((*argv)[0], *argv);
+			exit(EXIT_FAILURE);
+		}
+		close(l);
+		close(pair[1]);
+		l = pair[0];
+		argv++;
+		p++;
+	}
+	rw[0] = l;
+	return 0;
+}
+
+int xgetline(int fd, char* buf, size_t bufsize, size_t* linelen)
+{
+	/* TODO */
+	int r;
+	*linelen = 0;
+
+	(void)bufsize;
+
+	while ((r = read(fd, buf, 1))) {
+		if (*buf == '\n' || *buf == '\r') {
+			*buf = 0;
+			return 0;
+		}
+		++*linelen;
+		buf++;
+	}
+	return 1;
+}
+
+int read_entries(int fd, entry **head, entry **last)
+{
+	entry *q;
+	int n = 0, r;
+	char buf[BUFSIZ];
+	size_t L = 0;
+
+	*head = 0;
+	while (!(r = xgetline(fd, buf, sizeof(buf), &L))) {
+		q = malloc(sizeof(entry)+L+1);
+		q->prev = *last;
+		q->next = 0;
+		q->L = L;
+		memcpy(q->str, buf, L+1);
+		if (!*head) {
+			*head = q;
+		}
+		else {
+			(*last)->next = q;
+		}
+		*last = q;
+		n++;
+	}
+	return n;
+}
+
+int str2num(char *s, int max)
+{
+	int n = 0;
+
+	while (*s && '0' <= *s && *s <= '9') {
+		n *= 10;
+		n += *s - '0';
+		s++;
+	}
+	if (*s) {
+		err("ERROR: Not a number.\n");
+	}
+	if (n > max) {
+		err("ERROR: Number too big. Maximum is %d\n", max);
+	}
+	return n;
+}
+
+#define NO_ARG do { ++*argv; if (!(mid = **argv)) argv++; } while (0)
+
+static char *ARG(char ***argv)
+{
+	char *r = 0;
+
+	(**argv)++;
+	if (***argv) { /* -oARG */
+		r = **argv;
+		(*argv)++;
+	}
+	else { /* -o ARG */
+		(*argv)++;
+		if (**argv && ***argv != '-') {
+			r = **argv;
+			(*argv)++;
+		}
+	}
+	return r;
+}
+
+static char *EARG(char ***argv)
+{
+	char *a;
+	a = ARG(argv);
+	if (!a) {
+		err("ERROR: Expected argument.\n");
+	}
+	return a;
+}
+
+char* basename(char *S)
+{
+	char *s = S;
+	while (*s) s++;
+	while (S != s && *s != '/') s--;
+	if (*s == '/') s++;
+	return s;
+}
+
+static char *default_delim = "|";
+static char *default_subst = "{}";
+
+void usage(char *argv0)
+{
+	fprintf(stderr, "Usage: %s [options]\n", basename(argv0));
+	fprintf(stderr,
+	"Options:\n"
+	"    -h     Display this help message and exit.\n"
+	"    -d C   Set delimiter. Default: %s\n"
+	"    -s C   Set substitution. Default: %s\n",
+	default_delim,
+	default_subst
+	);
+}
+
+int main(int argc, char *argv[])
+{
+	char s[512];
+	char *delim = default_delim,
+	     *subst = default_subst,
+	     *argv0,
+	     **arg[ARG_MAX];
+	int rw[2], wstatus, n = 0;
+	ssize_t r;
+	pid_t p[3];
+	_Bool mid = 0;
+
+	(void)argc;
+
+	argv0 = *argv;
+	++argv;
+	while ((mid && **argv) || (*argv && **argv == '-')) {
+		if (!mid) ++*argv;
+		mid = 0;
+		if ((*argv)[0] == '-' && (*argv)[1] == 0) {
+			argv++;
+			break;
+		}
+		switch (**argv) {
+		case 'd':
+			delim = EARG(&argv);
+			break;
+		case 's':
+			subst = EARG(&argv);
+			break;
+		case 'h':
+			usage(argv0);
+			NO_ARG;
+			return 0;
+		default:
+			usage(argv0);
+			return 1;
+		}
+	}
+	arg[n] = argv;
+	arg[n+1] = 0;
+	while (*argv) {
+		if (!strcmp(*argv, delim)) {
+			*argv = 0;
+			n++;
+			argv++;
+			arg[n] = argv;
+			arg[n+1] = 0;
+			// TODO ARG_MAX
+		}
+		else if (!strcmp(*argv, subst)) {
+			*argv = s;
+		}
+		argv++;
+	}
+
+	s[0] = 0;
+
+	char buf[512];
+	char *curr = s;
+	while ((r = read(0, curr, 1))) {
+		if (*curr == 'q') break;
+		curr++;
+		*curr = 0;
+
+		spawn(rw, p, arg);
+		close(rw[1]); /* TODO */
+		while ((r = read(rw[0], buf, sizeof(buf)))) {
+			write(1, buf, r);
+		}
+		write(1, s, strlen(s));
+		wait(&wstatus);
+	}
+
+	return 0;
+}
