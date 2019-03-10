@@ -10,6 +10,9 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/select.h>
+#include <stdio.h> // TODO deleteme
 
 #include "utf8.h"
 
@@ -58,6 +61,22 @@ typedef struct {
 	special_type t : 8;
 } s2s;
 
+static const char *special_type_str[] = {
+	[S_NONE] = "none",
+	[S_ARROW_UP] = "up",
+	[S_ARROW_DOWN] = "down",
+	[S_ARROW_RIGHT] = "right",
+	[S_ARROW_LEFT] = "left",
+	[S_HOME] = "home",
+	[S_END] = "end",
+	[S_PAGE_UP] = "pup",
+	[S_PAGE_DOWN] = "pdn",
+	[S_INSERT] = "ins",
+	[S_BACKSPACE] = "bsp",
+	[S_DELETE] = "del",
+	[S_ESCAPE] = "esc",
+};
+
 static const s2s seq2special[] = {
 	{ "\x1b[@", S_INSERT },
 	{ "\x1b[A", S_ARROW_UP },
@@ -89,6 +108,14 @@ static const s2s seq2special[] = {
 	{ "\x1b", S_ESCAPE },
 	{ NULL, S_NONE },
 };
+
+void set_cur_pos(int, int);
+
+void get_cur_pos(int*, int*);
+
+void get_win_dims(int*, int*);
+
+int move_cursor(int, int);
 
 input get_input(void);
 
