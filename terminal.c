@@ -39,7 +39,7 @@ int raw(struct termios* before)
 	//raw.c_cc[VINTR] = 0x03;
 	//raw.c_cc[VSUSP] = 0x1a;
 	raw.c_iflag &= ~(BRKINT);
-	raw.c_lflag |= ISIG;
+	raw.c_lflag &= ~(ISIG); /* Ignore Ctrl-C and Ctrl-Z */
 	write(1, SL(CSI_CURSOR_HIDE));
 	return (tcsetattr(0, TCSAFLUSH, &raw) ? errno : 0);
 }
