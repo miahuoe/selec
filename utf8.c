@@ -52,7 +52,8 @@ int utf8_enchar(int cp, char* b)
 	return nb;
 }
 
-static _Bool cp_in(const int r[][2], size_t Z, int cp) {
+static _Bool cp_in(const int r[][2], size_t Z, int cp)
+{
 	if (cp < r[0][0] || r[Z][1] < cp) return 0;
 	size_t A = 0, I;
 	while (A <= Z) {
@@ -70,10 +71,21 @@ static _Bool cp_in(const int r[][2], size_t Z, int cp) {
 	return 0;
 }
 
-int utf8_width(int cp) {
+int utf8_cp2w(int cp)
+{
 	if (cp < 0x20 || cp == 0x7f) return 0;
 	if (cp < 0x7f) return 1;
 	if (cp_in(zero_width, zero_width_len-1, cp)) return 0;
 	if (cp_in(double_width, double_width_len-1, cp)) return 2;
 	return 1;
+}
+
+int utf8_strwidth(char *B)
+{
+	int w = 0, b, cp;
+	while ((b = utf8_dechar(&cp, B))) {
+		w += utf8_cp2w(cp);
+		B += b;
+	}
+	return w;
 }
