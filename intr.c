@@ -12,8 +12,10 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/select.h>
+#include <signal.h>
 
 #include "terminal.h"
+#include "edit.h"
 
 #define ARG_MAX 512
 
@@ -27,7 +29,8 @@
 typedef struct entry {
 	struct entry *next;
 	struct entry *prev;
-	size_t L;
+	_Bool selected;
+	unsigned short L;
 	char str[];
 } entry;
 
@@ -39,6 +42,7 @@ void err(const char *fmt, ...)
 	vfprintf(stderr, fmt, a);
 	va_end(a);
 	fflush(stderr);
+	fflush(stdout);
 	exit(EXIT_FAILURE);
 }
 
@@ -197,6 +201,35 @@ void usage(char *argv0)
 	);
 }
 
+static int g_winw = 0;
+static int g_winh = 0;
+
+void sighandler(int sig)
+{
+	switch (sig) {
+	case SIGWINCH:
+		get_win_dims(&g_winw, &g_winh);
+		break;
+	case SIGTERM:
+	case SIGINT:
+		exit(EXIT_SUCCESS);
+	default:
+		break;
+	}
+}
+
+void fill_line(int linelen, const char *fmt, ...)
+{
+	va_list a;
+
+	(void)linelen;
+
+	va_start(a, fmt);
+	dprintf(1, SL(CSI_CLEAR_LINE));
+	vdprintf(1, fmt, a);
+	va_end(a);
+}
+
 int main(int argc, char *argv[])
 {
 	char s[512];
@@ -208,8 +241,17 @@ int main(int argc, char *argv[])
 	pid_t p[3];
 	_Bool mid = 0;
 	struct termios old;
+	struct sigaction sa;
+	edit E;
+	edit_init(&E, s, sizeof(s));
 
 	(void)argc;
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = sighandler;
+	sigaction(SIGTERM, &sa, 0);
+	sigaction(SIGINT, &sa, 0);
+	sigaction(SIGWINCH, &sa, 0);
 
 	argv0 = *argv;
 	++argv;
@@ -255,43 +297,106 @@ int main(int argc, char *argv[])
 		argv++;
 	}
 
+	if (!n) {
+		usage(argv0);
+		return 0;
+	}
+
 	s[0] = 0;
 
-	char *curr = s;
 	entry *H = 0, *L = 0;
-	raw(&old);
 	input I;
-	int utflen;
+	int x, y;
+	int list_height = 5;
+
+	raw(&old);
+	get_cur_pos(&x, &y);
+	fprintf(stderr, "cur_pos(%d, %d)\r\n", x, y);
+	get_win_dims(&g_winw, &g_winh);
+	fprintf(stderr, "win_dims(%d, %d)\r\n", g_winw, g_winh);
+	fprintf(stderr, "list_height = %d\r\n", list_height);
+	if (g_winh < y+list_height) {
+		y -= list_height;
+		for (int i = 0; i < list_height; i++) {
+			dprintf(1, "~\r\n");
+		}
+	}
 	for (;;) {
+		fprintf(stderr, "cur_pos(%d, %d)\r\n", x, y);
+		fprintf(stderr, "edit(%d, %d)\r\n", E.cur_x, E.cur_y);
+		set_cur_pos(x, y);
+		for (int i = 0; i < list_height; i++) {
+			if (L) {
+				fill_line(g_winw, "%c %s\r\n",
+					L->selected ? '>' : ' ', L->str);
+				L = L->prev;
+			}
+			else {
+				fill_line(g_winw, "\r\n");
+			}
+		}
+		fill_line(g_winw, ">%.*s|", E.end-E.begin, E.begin);
+		write(1, SL(CSI_CURSOR_SHOW));
+		set_cur_pos(1+E.cur_x+1, g_winh);
 		I = get_input();
+		write(1, SL(CSI_CURSOR_HIDE));
+		set_cur_pos(x, y);
 		switch (I.t) {
 		case IT_NONE:
 		default:
 			break;
 		case IT_UTF8:
-			utflen = utf8_b2len(I.utf);
-			memcpy(curr, I.utf, utflen);
-			curr += utflen;
-			*curr = 0;
+			edit_insert(&E, I.utf, utf8_b2len(I.utf));
 			break;
 		case IT_SPEC:
+			fprintf(stderr, "IT_SPEC::%s\n", special_type_str[I.s]);
+			switch (I.s) {
+			default:
+				break;
+			case S_ESCAPE:
+				goto end;
+			case S_BACKSPACE:
+				edit_delete(&E, -1);
+				break;
+			case S_DELETE:
+				edit_delete(&E, 1);
+				break;
+			case S_ARROW_LEFT:
+				edit_move(&E, -1);
+				break;
+			case S_ARROW_RIGHT:
+				edit_move(&E, 1);
+				break;
+			case S_HOME:
+				edit_move(&E, -999); // TODO
+				break;
+			case S_END:
+				edit_move(&E, 999); // TODO
+				break;
+			}
 			break;
 		case IT_CTRL:
 			if (I.utf[0] == 'M' || I.utf[0] == 'J') goto end;
-			break;
 		}
 
 		spawn(rw, p, arg);
 		close(rw[1]); /* TODO */
+
 		read_entries(rw[0], &H, &L);
-		printf("\r%s                      ", s);
-		fflush(stdout);
 		wait(&wstatus);
 	}
 	end:
+	set_cur_pos(x, y);
+	for (int i = 0; i < list_height+1; i++) {
+		fprintf(stderr, "line!\n");
+		fill_line(g_winw, "");
+		if (i != list_height) {
+			dprintf(1, "\r\n", 2);
+		}
+	}
+	set_cur_pos(x, y);
 	unraw(&old);
-	printf("\r");
-	fflush(stdout);
+	fprintf(stderr, "'%.*s'\n", E.end-E.begin, E.begin);
 
 	return 0;
 }

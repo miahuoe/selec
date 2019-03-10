@@ -6,7 +6,7 @@ LDFLAGS = -static
 
 all : intr
 
-intr : intr.o utf8.o terminal.o
+intr : intr.o utf8.o terminal.o edit.o
 	$(LD) $(LDFLAGS) $^ -o $@
 
 %.o : %.c
