@@ -22,8 +22,8 @@
 /* TODO
  * - test & rename spawn()
  * - getline from fd
- * - raw mode and print only last N
- * - raw mode and SIGINT, SIGTERM...
+ * - copy selection on rescan
+ * - do pgup/pgdown differently
  */
 
 typedef struct entry {
@@ -101,6 +101,16 @@ int xgetline(int fd, char* buf, size_t bufsize, size_t* linelen)
 	return 1;
 }
 
+void entry_free(entry *H)
+{
+	entry *F;
+	while (H) {
+		F = H;
+		H = H->next;
+		free(F);
+	}
+}
+
 int read_entries(int fd, entry **head, entry **last)
 {
 	entry *q;
@@ -113,6 +123,7 @@ int read_entries(int fd, entry **head, entry **last)
 		q = malloc(sizeof(entry)+L+1);
 		q->prev = *last;
 		q->next = 0;
+		q->selected = 0;
 		q->L = L;
 		memcpy(q->str, buf, L+1);
 		if (!*head) {
@@ -127,7 +138,7 @@ int read_entries(int fd, entry **head, entry **last)
 	return n;
 }
 
-int str2num(char *s, int max)
+int str2num(char *s, int min, int max)
 {
 	int n = 0;
 
@@ -141,6 +152,9 @@ int str2num(char *s, int max)
 	}
 	if (n > max) {
 		err("ERROR: Number too big. Maximum is %d\n", max);
+	}
+	if (n < min) {
+		err("ERROR: Number too small. Minimum is %d\n", min);
 	}
 	return n;
 }
@@ -203,12 +217,16 @@ void usage(char *argv0)
 
 static int g_winw = 0;
 static int g_winh = 0;
+static int list_height = -1;
 
-void sighandler(int sig)
+static void sighandler(int sig)
 {
 	switch (sig) {
 	case SIGWINCH:
 		get_win_dims(&g_winw, &g_winh);
+		if (list_height >= g_winh) {
+			list_height = g_winh-1;
+		}
 		break;
 	case SIGTERM:
 	case SIGINT:
@@ -218,16 +236,65 @@ void sighandler(int sig)
 	}
 }
 
+static void prepare_window(int *x, int *y)
+{
+	int i;
+
+	*x = 1;
+	if (list_height == -1) {
+		list_height = g_winh-1;
+	}
+	if (g_winh < *y + list_height) {
+		*y = g_winh - (list_height + 1) + 1;
+		for (i = 0; i < list_height; i++) {
+			write(1, "\r\n", 2);
+		}
+	}
+}
+
 void fill_line(int linelen, const char *fmt, ...)
 {
+	/* TODO */
 	va_list a;
-
 	(void)linelen;
 
+	//int w = utf8_strwidth(
 	va_start(a, fmt);
 	dprintf(1, SL(CSI_CLEAR_LINE));
 	vdprintf(1, fmt, a);
 	va_end(a);
+}
+
+static void view_range_make(entry *view_range[2], int list_height, entry *L)
+{
+	view_range[0] = view_range[1] = L;
+	list_height--; /* Already have the first one. It's view_range[0] */
+	while (list_height-- && view_range[1]->next) {
+		view_range[1] = view_range[1]->next;
+	}
+}
+
+static void view_range_move(entry *view_range[2], entry **highlight, int n)
+{
+	/* TODO offsetof? */
+	if (n > 0) {
+		while (n-- && *highlight && (*highlight)->next) {
+			if (*highlight == view_range[1]) {
+				view_range[1] = view_range[1]->next;
+				view_range[0] = view_range[0]->next;
+			}
+			*highlight = (*highlight)->next;
+		}
+	}
+	else if (n < 0) {
+		while (n++ && *highlight && (*highlight)->prev) {
+			if (*highlight == view_range[0]) {
+				view_range[1] = view_range[1]->prev;
+				view_range[0] = view_range[0]->prev;
+			}
+			*highlight = (*highlight)->prev;
+		}
+	}
 }
 
 int main(int argc, char *argv[])
@@ -237,21 +304,19 @@ int main(int argc, char *argv[])
 	     *subst = default_subst,
 	     *argv0,
 	     **arg[ARG_MAX];
-	int rw[2], wstatus, n = 0;
+	int rw[2], wstatus, n = 0, x, y, utflen;
 	pid_t p[3];
-	_Bool mid = 0;
+	_Bool mid = 0, update = 1;
 	struct termios old;
 	struct sigaction sa;
 	edit E;
+	entry *H = 0, *L = 0, *highlight = 0;
+	entry *view_range[2] = { 0, 0 };
+	input I;
+
 	edit_init(&E, s, sizeof(s));
 
 	(void)argc;
-
-	memset(&sa, 0, sizeof(sa));
-	sa.sa_handler = sighandler;
-	sigaction(SIGTERM, &sa, 0);
-	sigaction(SIGINT, &sa, 0);
-	sigaction(SIGWINCH, &sa, 0);
 
 	argv0 = *argv;
 	++argv;
@@ -263,6 +328,9 @@ int main(int argc, char *argv[])
 			break;
 		}
 		switch (**argv) {
+		case 'L':
+			list_height = str2num(EARG(&argv), 1, 1000); // TODO
+			break;
 		case 'd':
 			delim = EARG(&argv);
 			break;
@@ -302,51 +370,54 @@ int main(int argc, char *argv[])
 		return 0;
 	}
 
-	s[0] = 0;
-
-	entry *H = 0, *L = 0;
-	input I;
-	int x, y;
-	int list_height = 5;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = sighandler;
+	sigaction(SIGWINCH, &sa, 0);
+	sigaction(SIGTERM, &sa, 0);
+	sigaction(SIGINT, &sa, 0);
 
 	raw(&old);
 	get_cur_pos(&x, &y);
-	fprintf(stderr, "cur_pos(%d, %d)\r\n", x, y);
 	get_win_dims(&g_winw, &g_winh);
-	fprintf(stderr, "win_dims(%d, %d)\r\n", g_winw, g_winh);
-	fprintf(stderr, "list_height = %d\r\n", list_height);
-	if (g_winh < y+list_height) {
-		y -= list_height;
-		for (int i = 0; i < list_height; i++) {
-			dprintf(1, "~\r\n");
-		}
-	}
+	prepare_window(&x, &y);
+
+	//fprintf(stderr, "cur_pos(%d, %d)\r\n", x, y);
+	//fprintf(stderr, "win_dims(%d, %d)\r\n", g_winw, g_winh);
+	//fprintf(stderr, "list_height = %d\r\n", list_height);
 	for (;;) {
-		fprintf(stderr, "cur_pos(%d, %d)\r\n", x, y);
-		fprintf(stderr, "edit(%d, %d)\r\n", E.cur_x, E.cur_y);
+		//fprintf(stderr, "cur_pos(%d, %d)\r\n", x, y);
+		//fprintf(stderr, "edit(%d, %d)\r\n", E.cur_x, E.cur_y);
+
 		set_cur_pos(x, y);
+		entry *w = view_range[0];
 		for (int i = 0; i < list_height; i++) {
-			if (L) {
+			if (w) {
 				fill_line(g_winw, "%c %s\r\n",
-					L->selected ? '>' : ' ', L->str);
-				L = L->prev;
+					w == highlight || w->selected
+					? '>' : ' ', w->str);
+				w = w->next;
 			}
 			else {
-				fill_line(g_winw, "\r\n");
+				fill_line(g_winw, "~\r\n");
 			}
 		}
-		fill_line(g_winw, ">%.*s|", E.end-E.begin, E.begin);
+		fill_line(g_winw, "> %.*s", (int)(E.end-E.begin), E.begin);
+
+		set_cur_pos(1+E.cur_x+2, y+list_height);
 		write(1, SL(CSI_CURSOR_SHOW));
-		set_cur_pos(1+E.cur_x+1, g_winh);
 		I = get_input();
 		write(1, SL(CSI_CURSOR_HIDE));
 		set_cur_pos(x, y);
+
 		switch (I.t) {
 		case IT_NONE:
 		default:
 			break;
 		case IT_UTF8:
-			edit_insert(&E, I.utf, utf8_b2len(I.utf));
+			update = 1;
+			utflen = utf8_b2len(I.utf);
+			fprintf(stderr, "IT_UTF8::%.*s\n", utflen, I.utf);
+			edit_insert(&E, I.utf, utflen);
 			break;
 		case IT_SPEC:
 			fprintf(stderr, "IT_SPEC::%s\n", special_type_str[I.s]);
@@ -356,10 +427,24 @@ int main(int argc, char *argv[])
 			case S_ESCAPE:
 				goto end;
 			case S_BACKSPACE:
+				update = 1;
 				edit_delete(&E, -1);
 				break;
 			case S_DELETE:
+				update = 1;
 				edit_delete(&E, 1);
+				break;
+			case S_PAGE_UP:
+				view_range_move(view_range, &highlight, -list_height);
+				break;
+			case S_PAGE_DOWN:
+				view_range_move(view_range, &highlight, list_height);
+				break;
+			case S_ARROW_UP:
+				view_range_move(view_range, &highlight, -1);
+				break;
+			case S_ARROW_DOWN:
+				view_range_move(view_range, &highlight, 1);
 				break;
 			case S_ARROW_LEFT:
 				edit_move(&E, -1);
@@ -376,19 +461,39 @@ int main(int argc, char *argv[])
 			}
 			break;
 		case IT_CTRL:
-			if (I.utf[0] == 'M' || I.utf[0] == 'J') goto end;
+			fprintf(stderr, "IT_CTRL::%c\n", I.utf[0]);
+			switch (I.utf[0]) {
+			case 'M':
+			case 'J': /* ENTER */
+				goto end;
+			case 'I': /* TAB */
+				if (highlight) highlight->selected = 1;
+				break;
+			}
+			break;
 		}
 
-		spawn(rw, p, arg);
-		close(rw[1]); /* TODO */
+		if (update) {
+			fprintf(stderr, "update\n");
+			update = 0;
+			entry_free(H);
+			H = L = highlight = 0;
+			if (*E.begin) {
+				fprintf(stderr, "read_entries\n");
+				spawn(rw, p, arg);
+				close(rw[1]); /* TODO */
 
-		read_entries(rw[0], &H, &L);
-		wait(&wstatus);
+				read_entries(rw[0], &H, &L);
+				view_range_make(view_range, list_height, H);
+				highlight = view_range[0];
+				wait(&wstatus);
+			}
+		}
+
 	}
-	end:
+end:
 	set_cur_pos(x, y);
 	for (int i = 0; i < list_height+1; i++) {
-		fprintf(stderr, "line!\n");
 		fill_line(g_winw, "");
 		if (i != list_height) {
 			dprintf(1, "\r\n", 2);
@@ -396,7 +501,16 @@ int main(int argc, char *argv[])
 	}
 	set_cur_pos(x, y);
 	unraw(&old);
-	fprintf(stderr, "'%.*s'\n", E.end-E.begin, E.begin);
 
+	fprintf(stderr, "'%.*s'\n", (int)(E.end-E.begin), E.begin);
+
+	entry *T = H;
+	while (T) {
+		if (T->selected) {
+			fprintf(stderr, "%s\n", T->str);
+		}
+		T = T->next;
+	}
+	entry_free(H);
 	return 0;
 }
