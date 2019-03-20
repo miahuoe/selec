@@ -1,3 +1,25 @@
+/*
+Copyright (c) 2019 Michał Czarnecki
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
 #ifndef _DEFAULT_SOURCE
 	#define _DEFAULT_SOURCE
 #endif
@@ -23,6 +45,7 @@
  * - test & rename spawn()
  * - copy selection on rescan
  * - do pgup/pgdown differently
+ * - on small number of entries use stack, not heap
  */
 
 typedef struct entry {
@@ -38,10 +61,8 @@ void err(const char *fmt, ...)
 	va_list a;
 
 	va_start(a, fmt);
-	vfprintf(stderr, fmt, a);
+	vdprintf(2, fmt, a);
 	va_end(a);
-	fflush(stderr);
-	fflush(stdout);
 	exit(EXIT_FAILURE);
 }
 
@@ -96,47 +117,46 @@ int spawn(int rw[2], pid_t *p, char **argv[])
 }
 
 /* TODO test other line endings like \r\n */
-int xgetline(int fd, char *buf, size_t bufs, char *b[3])
+int xgetline(int fd, char *buf, size_t bufs, char *b[2])
 {
 	char *src, *dst;
 	size_t s;
 	ssize_t r;
 	int i, L = 0;
 
-	src = b[1];
-	dst = b[0];
-	i = s = b[2] - b[1];
+	src = b[0];
+	dst = buf;
+	i = s = b[1] - b[0];
 	while (i--) {
 		*dst++ = *src++;
 	}
 	b[0] = buf;
-	b[1] = buf;
-	b[2] = buf + s;
+	b[1] = buf + s;
 
 	for (;;) {
-		while (*b[1] != '\n' && *b[1] != '\r' && b[2] - b[1] > 0) {
-			b[1]++;
+		while (*b[0] != '\n' && *b[0] != '\r' && b[1] - b[0] > 0) {
+			b[0]++;
 		}
-		if (b[2] - b[1] > 0 && (*b[1] == '\n' || *b[1] == '\r')) {
-			L = b[1] - b[0];
+		if (b[1] - b[0] > 0 && (*b[0] == '\n' || *b[0] == '\r')) {
+			L = b[0] - buf;
 			break;
 		}
 		else {
-			r = read(fd, b[2], bufs-(b[2]-b[0]));
+			r = read(fd, b[1], bufs-(b[1]-buf));
 			if (r == -1) {
 				return -2;
 			}
 			if (r == 0) {
 				return -1;
 			}
-			b[2] += r;
+			b[1] += r;
 		}
 	}
-	*b[1] = 0;
-	b[1]++;
-	if (b[2] - b[1] > 0 && (*b[1] == '\n' || *b[1] == '\r')) {
-		*b[1] = 0;
-		b[1]++;
+	*b[0] = 0;
+	b[0]++;
+	if (b[1] - b[0] > 0 && (*b[0] == '\n' || *b[0] == '\r')) {
+		*b[0] = 0;
+		b[0]++;
 	}
 	return L;
 }
@@ -156,7 +176,7 @@ int read_entries(int fd, entry **head, entry **last)
 	entry *q;
 	int n = 0, L;
 	char buf[BUFSIZ];
-	char *b[3] = { buf, buf, buf };
+	char *b[2] = { buf, buf };
 
 	*head = 0;
 	while (0 <= (L = xgetline(fd, buf, sizeof(buf), b))) {
@@ -242,8 +262,8 @@ static char *default_subst = "{}";
 
 void usage(char *argv0)
 {
-	fprintf(stderr, "Usage: %s [options]\n", basename(argv0));
-	fprintf(stderr,
+	dprintf(2, "Usage: %s [options]\n", basename(argv0));
+	dprintf(2,
 	"Options:\n"
 	"    -h     Display this help message and exit.\n"
 	"    -d C   Set delimiter. Default: %s\n"
@@ -354,7 +374,7 @@ int main(int argc, char *argv[])
 	char s[512]; /* TODO */
 	char *delim = default_delim,
 	     *subst = default_subst,
-	     *argv0, **arg[ARG_MAX];
+	     *argv0, **arg[ARG_MAX+1];
 	int rw[2], wstatus, n = 0, x, y, utflen;
 	int selected = 0;
 	pid_t p[3];
@@ -543,15 +563,19 @@ end:
 	unraw(&old);
 
 	if (!selected && highlight) {
-		printf("%s\n", highlight->str);
+		dprintf(1, "%s\n", highlight->str);
 	}
-	entry *T = H;
-	while (T) {
-		if (T->selected) {
-			printf("%s\n", T->str);
+	else {
+		entry *T;
+		while (H) {
+			if (H->selected) {
+				dprintf(1, "%s\n", H->str);
+			}
+			T = H;
+			H = H->next;
+			free(T);
 		}
-		T = T->next;
 	}
-	entry_free(H);
+	//entry_free(H);
 	return 0;
 }
