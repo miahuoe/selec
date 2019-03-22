@@ -62,14 +62,12 @@ int raw(struct termios* before)
 	//raw.c_cc[VSUSP] = 0x1a;
 	raw.c_iflag &= ~(BRKINT);
 	raw.c_lflag &= ~(ISIG); /* Ignore Ctrl-C and Ctrl-Z */
-	write(1, SL(CSI_CURSOR_HIDE));
 	return (tcsetattr(0, TCSAFLUSH, &raw) ? errno : 0);
 }
 
 int unraw(struct termios* before)
 {
 	if (tcsetattr(0, TCSAFLUSH, before)) return errno;
-	write(1, SL(CSI_CURSOR_SHOW));
 	return 0;
 }
 
@@ -107,15 +105,15 @@ static _Bool in(char c, char *S)
 	return *S;
 }
 
-static char Tread1(char *c)
+static char tread1(char *c, int fd)
 {
-	if (1 == tread(0, c, 1, 125000)) return *c;
+	if (1 == tread(fd, c, 1, 125000)) return *c;
 	return 0;
 }
 
-static char read1(char *c)
+static char read1(char *c, int fd)
 {
-	if (1 == read(0, c, 1)) return *c;
+	if (1 == read(fd, c, 1)) return *c;
 	return 0;
 }
 
@@ -134,17 +132,20 @@ special_type which_key(char *seq)
 /* TODO BUG
  * Quick enough ESC + arrow left (for example) segfaults
  */
-input get_input(void)
+input get_input(int fd)
 {
 	input i;
 	int utflen, b;
 	char seq[8] = { 0 };
 
 	memset(&i, 0, sizeof(i));
-	if (read1(seq) == '\x1b') {
-		if (Tread1(seq+1) && in(seq[1], "[O")) {
-			if (read1(seq+2) && in(seq[2], "0123456789")) {
-				read1(seq+3);
+	if (read1(seq, fd) == 0) {
+		i.t = IT_EOF;
+	}
+	else if (seq[0] == '\x1b') {
+		if (tread1(seq+1, fd) && in(seq[1], "[O")) {
+			if (read1(seq+2, fd) && in(seq[2], "0123456789")) {
+				read1(seq+3, fd);
 			}
 		}
 		i.t = IT_SPEC;
@@ -166,7 +167,7 @@ input get_input(void)
 		i.t = IT_UTF8;
 		i.utf[0] = seq[0];
 		for (b = 1; b < utflen; ++b) {
-			if (!read1(i.utf+b)) {
+			if (!read1(i.utf+b, fd)) {
 				i.t = IT_NONE;
 				memset(i.utf, 0, 5);
 				return i;

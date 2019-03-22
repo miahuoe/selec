@@ -53,7 +53,8 @@ typedef enum {
 	IT_NONE = 0,
 	IT_UTF8, // utf will contain bytes of the glyph
 	IT_CTRL, // utf[0] will contain character
-	IT_SPEC
+	IT_SPEC,
+	IT_EOF
 } input_type;
 
 typedef enum {
@@ -73,8 +74,8 @@ typedef enum {
 } special_type;
 
 typedef struct {
-	input_type t : 2;
-	special_type s : 6;
+	input_type t : 8;
+	special_type s : 8;
 	char utf[4];
 } input;
 
@@ -140,7 +141,7 @@ void get_win_dims(int*, int*);
 
 int move_cursor(int, int);
 
-input get_input(void);
+input get_input(int);
 
 special_type which_key(char*);
 
