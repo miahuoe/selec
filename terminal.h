@@ -34,7 +34,6 @@ SOFTWARE.
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/select.h>
-#include <stdio.h> // TODO deleteme
 
 #include "utf8.h"
 

@@ -22,16 +22,87 @@ SOFTWARE.
 
 #include "terminal.h"
 
+static size_t _striint(char *buf, int i, _Bool *tail)
+{
+	char c;
+	size_t s;
+
+	if (i == 0) {
+		*tail = 1;
+		return 0;
+	}
+	c = '0' + (i % 10);
+	i /= 10;
+	s = _striint(buf, i, tail);
+	buf += s;
+	*buf = c;
+	return s+1;
+}
+
+static size_t strint(char *buf, int i)
+{
+	_Bool tail = 0;
+	if (i == 0) {
+		*buf = '0';
+		return 1;
+	}
+	else {
+		return _striint(buf, i, &tail);
+	}
+}
+
 void set_cur_pos(int fd, int x, int y)
 {
-	dprintf(fd, "\x1b[%d;%dH", y, x);
+	char buf[2+5+1+5+1];
+	char *b = buf;
+	size_t xs, ys;
+
+	b[0] = '\x1b';
+	b[1] = '[';
+	b += 2;
+	ys = strint(b, y);
+	b += ys;
+	b[0] = ';';
+	b += 1;
+	xs = strint(b, x);
+	b += xs;
+	b[0] = 'H';
+	write(fd, buf, 2+ys+1+xs+1);
+}
+
+static char read1(char *c, int fd)
+{
+	if (1 == read(fd, c, 1)) return *c;
+	return 0;
 }
 
 void get_cur_pos(int fd, int *x, int *y)
 {
-	// TODO
-	dprintf(fd, "\x1b[6n", 4);
-	scanf("\x1b[%d;%dR", y, x);
+	char c;
+
+	write(fd, "\x1b[6n", 4);
+	*x = *y = 0;
+	if (read1(&c, fd) == '\x1b' && read1(&c, fd) == '[' && read1(&c, fd)) {
+		while ('0' <= c && c <= '9') {
+			*y *= 10;
+			*y += c - '0';
+			read1(&c, fd);
+		}
+		if (c != ';') {
+			*x = *y = 0;
+			/* TODO */
+		}
+		read1(&c, fd);
+		while ('0' <= c && c <= '9') {
+			*x *= 10;
+			*x += c - '0';
+			read1(&c, fd);
+		}
+		if (c != 'R') {
+			*x = *y = 0;
+			/* TODO */
+		}
+	}
 }
 
 void get_win_dims(int fd, int *C, int *R)
@@ -45,10 +116,21 @@ void get_win_dims(int fd, int *C, int *R)
 }
 
 int move_cursor(int fd, int R, int C) {
-	char buf[1+1+4+1+4+1+1];
-	size_t n;
-	n = snprintf(buf, sizeof(buf), "\x1b[%d;%dH", R, C);
-	return (write(fd, buf, n) == -1 ? errno : 0);
+	char buf[1+1+5+1+5+1];
+	char *b = buf;
+	size_t rs, cs;
+
+	b[0] = '\x1b';
+	b[1] = '[';
+	b += 2;
+	rs = strint(b, R);
+	b += rs;
+	b[0] = ';';
+	b += 1;
+	cs = strint(b, C);
+	b += cs;
+	b[0] = 'H';
+	return (write(fd, buf, 2+rs+1+cs+1) == -1 ? errno : 0);
 }
 
 int raw(struct termios* before, int fd)
@@ -108,12 +190,6 @@ static _Bool in(char c, char *S)
 static char tread1(char *c, int fd)
 {
 	if (1 == tread(fd, c, 1, 125000)) return *c;
-	return 0;
-}
-
-static char read1(char *c, int fd)
-{
-	if (1 == read(fd, c, 1)) return *c;
 	return 0;
 }
 
