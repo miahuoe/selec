@@ -35,6 +35,7 @@ SOFTWARE.
 #include <string.h>
 #include <sys/select.h>
 #include <signal.h>
+#include <fcntl.h>
 
 #include "terminal.h"
 #include "edit.h"
@@ -238,7 +239,7 @@ static char *ARG(char ***argv)
 	return r;
 }
 
-static char *EARG(char ***argv)
+static char* EARG(char ***argv)
 {
 	char *a;
 	a = ARG(argv);
@@ -281,7 +282,7 @@ static void sighandler(int sig)
 {
 	switch (sig) {
 	case SIGWINCH:
-		get_win_dims(&g_winw, &g_winh);
+		get_win_dims(2, &g_winw, &g_winh);
 		if (list_height >= g_winh) {
 			list_height = g_winh-1;
 		}
@@ -342,10 +343,10 @@ static void view_range_move(entry *view_range[2], entry **highlight, int n)
 	}
 }
 
-static void draw_view_range(entry *view_range[2], entry *highlight, int W, int H)
+static void draw_view_range(int fd, entry *view_range[2], entry *highlight, int W, int H)
 {
 	entry *w;
-	int fd = 2, b;
+	int b;
 
 	w = view_range[0];
 	while (w && H) {
@@ -371,14 +372,16 @@ static void draw_view_range(entry *view_range[2], entry *highlight, int W, int H
 
 int main(int argc, char *argv[])
 {
-	char s[512]; /* TODO */
+	char s[4*1024];
 	char *delim = default_delim,
 	     *subst = default_subst,
 	     *argv0, **arg[ARG_MAX+1];
 	int rw[2], wstatus, n = 0, x, y, utflen;
 	int selected = 0;
+	int inputfd = 0;
+	int drawfd = 2;
 	pid_t p[3];
-	_Bool mid = 0, update = 1;
+	_Bool mid = 0, update = 1, from_stdin = 1;
 	struct termios old;
 	struct sigaction sa;
 	edit E;
@@ -416,6 +419,11 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 	}
+
+	/*
+	 * arg[] will contain pointers from argv[].
+	 * argv[] will be zeroed at delimiters.
+	 */
 	arg[n] = argv;
 	arg[n+1] = 0;
 	while (*argv) {
@@ -435,46 +443,98 @@ int main(int argc, char *argv[])
 		argv++;
 	}
 
-	if (!n) {
-		usage(argv0);
-		return 0;
+	/*
+	 * intr may be passed data via stdin.
+	 * Like so: some-command | intr
+	 * In such case user input will be available in /dev/tty
+	 */
+	from_stdin = !isatty(0);
+
+	if (from_stdin) {
+		inputfd = open("/dev/tty", O_RDONLY);
+		if (inputfd == -1) {
+			err("Failed to open /dev/tty.\n");
+		}
 	}
 
+	if (from_stdin) {
+		highlight = 0;
+		view_range[0] = view_range[1] = 0;
+		entry_free(H);
+		H = L = highlight = 0;
+		read_entries(0, &H, &L);
+		if (H) {
+			view_range_make(view_range, list_height, H);
+			highlight = view_range[0];
+		}
+		else {
+			usage(argv0);
+			return 0;
+		}
+	}
+
+	/* Set signal handlers */
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = sighandler;
 	sigaction(SIGWINCH, &sa, 0);
 	sigaction(SIGTERM, &sa, 0);
 	sigaction(SIGINT, &sa, 0);
 
-	raw(&old);
-	get_cur_pos(&x, &y);
-	get_win_dims(&g_winw, &g_winh);
-	prepare_window(2, &x, &y);
+	if (-1 == raw(&old, inputfd)) {
+		err("Couldn't initialize terminal.\n");
+	}
+	write(drawfd, SL(CSI_CURSOR_HIDE));
+	get_cur_pos(drawfd, &x, &y);
+	get_win_dims(drawfd, &g_winw, &g_winh);
+	prepare_window(drawfd, &x, &y);
 	edit_init(&E, s, sizeof(s));
 
 	for (;;) {
-		set_cur_pos(x, y);
-		draw_view_range(view_range, highlight, g_winw, list_height);
-		dprintf(2, "%s> %.*s", CSI_CLEAR_LINE, (int)(E.end-E.begin), E.begin);
-		set_cur_pos(1+E.cur_x+2, y+list_height);
-		write(2, SL(CSI_CURSOR_SHOW));
-		I = get_input();
-		write(2, SL(CSI_CURSOR_HIDE));
-		set_cur_pos(x, y);
+		if (from_stdin) {
+
+		}
+		if (update && !from_stdin) {
+			update = 0;
+			selected = 0;
+			highlight = 0;
+			view_range[0] = view_range[1] = 0;
+			entry_free(H);
+			H = L = highlight = 0;
+			if (*E.begin || 1) {
+				spawn(rw, p, arg);
+				//close(rw[1]); /* TODO */
+
+				read_entries(rw[0], &H, &L);
+				//close(rw[0]);
+				if (H) {
+					view_range_make(view_range, list_height, H);
+					highlight = view_range[0];
+					wait(&wstatus);
+				}
+			}
+		}
+
+		set_cur_pos(drawfd, x, y);
+		draw_view_range(drawfd, view_range, highlight, g_winw, list_height);
+		dprintf(drawfd, "%s> %.*s", CSI_CLEAR_LINE, (int)(E.end-E.begin), E.begin);
+		set_cur_pos(drawfd, 1+E.cur_x+2, y+list_height);
+		write(drawfd, SL(CSI_CURSOR_SHOW));
+		I = get_input(inputfd);
+		write(drawfd, SL(CSI_CURSOR_HIDE));
+		set_cur_pos(drawfd, x, y);
 
 		switch (I.t) {
 		case IT_NONE:
-			//printf("NONE\n");
 		default:
 			break;
+		case IT_EOF:
+			goto end;
 		case IT_UTF8:
 			update = 1;
 			utflen = utf8_b2len(I.utf);
 			edit_insert(&E, I.utf, utflen);
-			//printf("UTF8::'%.*s'\n", utflen, I.utf);
 			break;
 		case IT_SPEC:
-			//printf("SPEC::'%s'\n", special_type_str[I.s]);
 			switch (I.s) {
 			default:
 				break;
@@ -515,7 +575,6 @@ int main(int argc, char *argv[])
 			}
 			break;
 		case IT_CTRL:
-			//printf("CTRL::'%c'\n", I.utf[0]);
 			switch (I.utf[0]) {
 			case 'M':
 			case 'J': /* ENTER */
@@ -529,38 +588,18 @@ int main(int argc, char *argv[])
 			}
 			break;
 		}
-
-		if (update) {
-			update = 0;
-			selected = 0;
-			highlight = 0;
-			view_range[0] = view_range[1] = 0;
-			entry_free(H);
-			H = L = highlight = 0;
-			if (*E.begin) {
-				spawn(rw, p, arg);
-				close(rw[1]); /* TODO */
-
-				read_entries(rw[0], &H, &L);
-				if (H) {
-					view_range_make(view_range, list_height, H);
-					highlight = view_range[0];
-					wait(&wstatus);
-				}
-			}
-		}
-
 	}
 end:
-	set_cur_pos(x, y);
+	set_cur_pos(drawfd, x, y);
 	for (int i = 0; i < list_height+1; i++) {
-		dprintf(2, "%s", CSI_CLEAR_LINE);
+		dprintf(drawfd, "%s", CSI_CLEAR_LINE);
 		if (i != list_height) {
-			dprintf(2, "\r\n");
+			dprintf(drawfd, "\r\n");
 		}
 	}
-	set_cur_pos(x, y);
-	unraw(&old);
+	set_cur_pos(drawfd, x, y);
+	unraw(&old, inputfd);
+	write(drawfd, SL(CSI_CURSOR_SHOW));
 
 	if (!selected && highlight) {
 		dprintf(1, "%s\n", highlight->str);
