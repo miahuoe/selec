@@ -22,33 +22,33 @@ SOFTWARE.
 
 #include "terminal.h"
 
-void set_cur_pos(int x, int y)
+void set_cur_pos(int fd, int x, int y)
 {
-	dprintf(1, "\x1b[%d;%dH", y, x);
+	dprintf(fd, "\x1b[%d;%dH", y, x);
 }
 
-void get_cur_pos(int *x, int *y)
+void get_cur_pos(int fd, int *x, int *y)
 {
 	// TODO
-	dprintf(1, "\x1b[6n", 4);
+	dprintf(fd, "\x1b[6n", 4);
 	scanf("\x1b[%d;%dR", y, x);
 }
 
-void get_win_dims(int *C, int *R)
+void get_win_dims(int fd, int *C, int *R)
 {
 	struct winsize ws;
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1) {
+	if (ioctl(fd, TIOCGWINSZ, &ws) == -1) {
 		*R = *C = 0;
 	}
 	*R = ws.ws_row;
 	*C = ws.ws_col;
 }
 
-int move_cursor(int R, int C) {
+int move_cursor(int fd, int R, int C) {
 	char buf[1+1+4+1+4+1+1];
 	size_t n;
 	n = snprintf(buf, sizeof(buf), "\x1b[%d;%dH", R, C);
-	return (write(STDOUT_FILENO, buf, n) == -1 ? errno : 0);
+	return (write(fd, buf, n) == -1 ? errno : 0);
 }
 
 int raw(struct termios* before, int fd)
@@ -131,6 +131,8 @@ special_type which_key(char *seq)
 
 /* TODO BUG
  * Quick enough ESC + arrow left (for example) segfaults
+ *
+ * TODO error prone (ifs arent 'elsed')
  */
 input get_input(int fd)
 {
@@ -143,10 +145,14 @@ input get_input(int fd)
 		i.t = IT_EOF;
 	}
 	else if (seq[0] == '\x1b') {
+		retry:
 		if (tread1(seq+1, fd) && in(seq[1], "[O")) {
 			if (read1(seq+2, fd) && in(seq[2], "0123456789")) {
 				read1(seq+3, fd);
 			}
+		}
+		else if (seq[1] == '\x1b') {
+			goto retry; /* Fixes fast-esc bug. But is it a good solution? */
 		}
 		i.t = IT_SPEC;
 		i.s = which_key(seq);

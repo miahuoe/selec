@@ -133,13 +133,13 @@ static const s2s seq2special[] = {
 	{ NULL, S_NONE },
 };
 
-void set_cur_pos(int, int);
+void set_cur_pos(int, int, int);
 
-void get_cur_pos(int*, int*);
+void get_cur_pos(int, int*, int*);
 
-void get_win_dims(int*, int*);
+void get_win_dims(int, int*, int*);
 
-int move_cursor(int, int);
+int move_cursor(int, int, int);
 
 input get_input(int);
 
