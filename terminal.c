@@ -51,23 +51,23 @@ int move_cursor(int R, int C) {
 	return (write(STDOUT_FILENO, buf, n) == -1 ? errno : 0);
 }
 
-int raw(struct termios* before)
+int raw(struct termios* before, int fd)
 {
 	struct termios raw;
 
-	if (tcgetattr(0, before)) return errno;
+	if (tcgetattr(fd, before)) return errno;
 	raw = *before;
 	cfmakeraw(&raw);
 	//raw.c_cc[VINTR] = 0x03;
 	//raw.c_cc[VSUSP] = 0x1a;
 	raw.c_iflag &= ~(BRKINT);
 	raw.c_lflag &= ~(ISIG); /* Ignore Ctrl-C and Ctrl-Z */
-	return (tcsetattr(0, TCSAFLUSH, &raw) ? errno : 0);
+	return (tcsetattr(fd, TCSAFLUSH, &raw) ? errno : 0);
 }
 
-int unraw(struct termios* before)
+int unraw(struct termios* before, int fd)
 {
-	if (tcsetattr(0, TCSAFLUSH, before)) return errno;
+	if (tcsetattr(fd, TCSAFLUSH, before)) return errno;
 	return 0;
 }
 

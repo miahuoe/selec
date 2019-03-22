@@ -145,8 +145,8 @@ input get_input(int);
 
 special_type which_key(char*);
 
-int raw(struct termios*);
+int raw(struct termios*, int);
 
-int unraw(struct termios*);
+int unraw(struct termios*, int);
 
 #endif
