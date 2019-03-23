@@ -44,6 +44,7 @@ SOFTWARE.
 #define NO_ARG do { ++*argv; if (!(mid = **argv)) argv++; } while (0)
 
 /* TODO
+ * - limit edit line width
  * - adjust highlight after change
  * - match fragment highlight
  * - do pgup/pgdown differently
@@ -54,7 +55,6 @@ typedef struct entry {
 	struct entry *next;
 	struct entry *prev;
 	_Bool selected;
-	_Bool match;
 	unsigned short L;
 	char str[];
 } entry;
@@ -75,8 +75,8 @@ static void usage(char*);
 static void setup_signals(void);
 static void sighandler(int);
 static void prepare_window(int, int*, int*);
-static void view_range_draw(int, entry**, int, int, int, int);
-static void view_range_move(entry**, int*, int, int*, int);
+static void view_range_draw(int, entry**, int[2], int, int, int);
+static void view_range_move(entry**, int[2], int*, int);
 static void fill_visible(entry*, entry**);
 
 /* Global, because sighandler must be able to resize window */
@@ -201,7 +201,6 @@ static int entry_match(entry *H, entry **L, char *reg, int cflags)
 	L++;
 	while (H) {
 		if (0 == regexec(&R, H->str, 1, &pmatch, eflags)) {
-			H->match = 1;
 			*L = H;
 			L++;
 			*L = 0;
@@ -351,22 +350,25 @@ static void prepare_window(int fd, int *x, int *y)
 	}
 }
 
-static void view_range_draw(int fd, entry **L, int view_start, int hl, int W, int H)
+static void view_range_draw(int fd, entry **L, int view[2], int hl, int W, int H)
 {
-	while (L[view_start] && H) {
-		if (view_start == hl) {
+	int c;
+
+	c = view[0];
+	while (L[c] && H) {
+		if (c == hl) {
 			dprintf(fd, "\x1b[%c%cm", '3', '0');
 			dprintf(fd, "\x1b[%c%cm", '4', '7');
 		}
 		dprintf(fd, "%s%c %.*s", CSI_CLEAR_LINE,
-			view_start == hl || L[view_start]->selected ? '>' : ' ',
-			utf8_limit_width(L[view_start]->str, W-2),
-			L[view_start]->str);
-		if (view_start == hl) {
+			c == hl || L[c]->selected ? '>' : ' ',
+			utf8_limit_width(L[c]->str, W-2),
+			L[c]->str);
+		if (c == hl) {
 			dprintf(fd, "\x1b[%cm", '0');
 		}
 		dprintf(fd, "\r\n");
-		view_start++;
+		c++;
 		H--;
 	}
 	while (H) {
@@ -375,12 +377,13 @@ static void view_range_draw(int fd, entry **L, int view_start, int hl, int W, in
 	}
 }
 
-static void view_range_move(entry **L, int *view_start, int list_height, int *hl, int y)
+static void view_range_move(entry **L, int view[2], int *hl, int y)
 {
 	if (y > 0) {
-		while (y-- && L[(*view_start)+1]) {
-			if (L[1+*hl] && (*view_start)+list_height == 1+*hl) {
-				++*view_start;
+		while (y--) {
+			if (L[1+*hl] && view[1] == 1+*hl) {
+				++view[0];
+				++view[1];
 			}
 			if (L[1+*hl]) {
 				++*hl;
@@ -388,9 +391,10 @@ static void view_range_move(entry **L, int *view_start, int list_height, int *hl
 		}
 	}
 	else if (y < 0) {
-		while (y++ && L[(*view_start)-1]) {
-			if (L[-1+*hl] && (*view_start)-1 == -1+*hl) {
-				--*view_start;
+		while (y++) {
+			if (L[-1+*hl] && view[0]-1 == -1+*hl) {
+				--view[0];
+				--view[1];
 			}
 			if (L[-1+*hl]) {
 				--*hl;
@@ -420,7 +424,7 @@ int main(int argc, char *argv[])
 	_Bool mid = 0, update = 1;
 	struct termios old;
 	edit E;
-	int view_start; // TODO -> view[2]
+	int view[2];
 	int highlight; // TODO find after change
 	entry **visible; // TODO simplify
 	entry *list[2] = { 0, 0 };
@@ -478,7 +482,8 @@ int main(int argc, char *argv[])
 		num = read_entries(0, &list[0], &list[1]);
 
 		visible = malloc((num+2) * sizeof(entry*));
-		view_start = 1;
+		view[0] = 1;
+		view[1] = 1+(num < g_list_height ? num : g_list_height);
 		highlight = 1;
 		fill_visible(list[0], visible);
 
@@ -501,10 +506,13 @@ int main(int argc, char *argv[])
 		if (update) {
 			update = 0;
 			matching = entry_match(list[0], visible, E.begin, cflags);
+			view[0] = 1;
+			view[1] = 1+(matching < g_list_height ? matching : g_list_height);
+			highlight = 1;
 		}
 
 		set_cur_pos(drawfd, x, y);
-		view_range_draw(drawfd, visible, view_start, highlight, g_winw, g_list_height);
+		view_range_draw(drawfd, visible, view, highlight, g_winw, g_list_height);
 		write(drawfd, SL(CSI_CLEAR_LINE));
 
 		d = digits(num);
@@ -543,20 +551,16 @@ int main(int argc, char *argv[])
 				edit_delete(&E, 1);
 				break;
 			case S_PAGE_UP:
-				view_range_move(visible, &view_start,
-					g_list_height, &highlight, -g_list_height);
+				view_range_move(visible, view, &highlight, -g_list_height);
 				break;
 			case S_PAGE_DOWN:
-				view_range_move(visible, &view_start,
-					g_list_height, &highlight, g_list_height);
+				view_range_move(visible, view, &highlight, g_list_height);
 				break;
 			case S_ARROW_UP:
-				view_range_move(visible, &view_start,
-					g_list_height, &highlight, -1);
+				view_range_move(visible, view, &highlight, -1);
 				break;
 			case S_ARROW_DOWN:
-				view_range_move(visible, &view_start,
-					g_list_height, &highlight, 1);
+				view_range_move(visible, view, &highlight, 1);
 				break;
 			case S_ARROW_LEFT:
 				edit_move(&E, -1);
