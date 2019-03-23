@@ -303,6 +303,7 @@ static void usage(char *argv0)
 	dprintf(2,
 	"Options:\n"
 	"    -E     Use extended regex.\n"
+	"    -i     Case sensitive.\n"
 	"    -h     Display this help message and exit.\n");
 }
 
@@ -415,7 +416,7 @@ int main(int argc, char *argv[])
 	int x, y, utflen, d, i;
 	int selected = 0, num = 0, matching;
 	int inputfd = 0, drawfd = 2;
-	int cflags = REG_EXTENDED | REG_ICASE | REG_NEWLINE;
+	int cflags = REG_ICASE | REG_NEWLINE;
 	_Bool mid = 0, update = 1;
 	struct termios old;
 	edit E;
@@ -437,6 +438,14 @@ int main(int argc, char *argv[])
 			break;
 		}
 		switch (**argv) {
+		case 'i':
+			cflags &= ~REG_ICASE;
+			NO_ARG;
+			break;
+		case 'E':
+			cflags |= REG_EXTENDED;
+			NO_ARG;
+			break;
 		case 'L':
 			g_list_height = str2num(EARG(&argv), 1, 1000); // TODO
 			break;
