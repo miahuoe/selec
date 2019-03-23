@@ -22,6 +22,55 @@ SOFTWARE.
 
 #include "terminal.h"
 
+char *special_type_str[] = {
+	[S_NONE] = "none",
+	[S_ARROW_UP] = "up",
+	[S_ARROW_DOWN] = "down",
+	[S_ARROW_RIGHT] = "right",
+	[S_ARROW_LEFT] = "left",
+	[S_HOME] = "home",
+	[S_END] = "end",
+	[S_PAGE_UP] = "pup",
+	[S_PAGE_DOWN] = "pdn",
+	[S_INSERT] = "ins",
+	[S_BACKSPACE] = "bsp",
+	[S_DELETE] = "del",
+	[S_ESCAPE] = "esc",
+};
+
+/* TODO more */
+s2s seq2special[] = {
+	{ "\x1b[@", S_INSERT },
+	{ "\x1b[A", S_ARROW_UP },
+	{ "\x1b[B", S_ARROW_DOWN },
+	{ "\x1b[C", S_ARROW_RIGHT },
+	{ "\x1b[D", S_ARROW_LEFT },
+	{ "\x1b[H", S_HOME },
+	{ "\x1b[F", S_END },
+	{ "\x1b[P", S_DELETE },
+	{ "\x1b[V", S_PAGE_UP },
+	{ "\x1b[U", S_PAGE_DOWN },
+	{ "\x1b[Y", S_END },
+
+	{ "\x1bOA", S_ARROW_UP },
+	{ "\x1bOB", S_ARROW_DOWN },
+	{ "\x1bOC", S_ARROW_RIGHT },
+	{ "\x1bOD", S_ARROW_LEFT },
+	{ "\x1bOH", S_HOME },
+	{ "\x1bOF", S_END },
+
+	{ "\x1b[1~", S_HOME },
+	{ "\x1b[3~", S_DELETE },
+	{ "\x1b[4~", S_END },
+	{ "\x1b[5~", S_PAGE_UP },
+	{ "\x1b[6~", S_PAGE_DOWN },
+	{ "\x1b[7~", S_HOME },
+	{ "\x1b[8~", S_END },
+	{ "\x1b[4h", S_INSERT },
+	{ "\x1b", S_ESCAPE },
+	{ NULL, S_NONE },
+};
+
 static size_t _striint(char *buf, int i, _Bool *tail)
 {
 	char c;

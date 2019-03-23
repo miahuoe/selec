@@ -42,6 +42,8 @@ SOFTWARE.
 
 #define ARG_MAX 512
 
+#define NO_ARG do { ++*argv; if (!(mid = **argv)) argv++; } while (0)
+
 /* TODO
  * - test & rename spawn()
  * - copy selection on rescan
@@ -57,7 +59,37 @@ typedef struct entry {
 	char str[];
 } entry;
 
-void err(const char *fmt, ...)
+static void err(const char*, ...);
+static int utf8_limit_width(char*, int);
+static int spawn(int [2], pid_t*, char**[]);
+static int xgetline(int, char*, size_t, char *[2]);
+static void entry_free(entry*);
+static void entry_print_and_free(entry*, int);
+static int read_entries(int, entry**, entry**);
+static int str2num(char*, int, int);
+static char* EARG(char***);
+static char *ARG(char***);
+static char* basename(char*);
+static void usage(char*);
+static void sighandler(int);
+static void prepare_window(int, int*, int*);
+static void view_range_make(entry*[2], int, entry*);
+static void view_range_move(entry*[2], entry **, int);
+static void draw_view_range(int, entry*[2], entry*, int, int);
+
+/* from terminal.h */
+extern char *special_type_str[];
+extern s2s seq2special[];
+
+static char *default_delim = "|";
+static char *default_subst = "{}";
+
+/* Global, because sighandler must be able to resize window */
+static int g_winw = 0;
+static int g_winh = 0;
+static int g_list_height = -1;
+
+static void err(const char *fmt, ...)
 {
 	va_list a;
 
@@ -68,7 +100,7 @@ void err(const char *fmt, ...)
 }
 
 /* Returns the number of bytes that have maximum width W */
-int utf8_limit_width(char *S, int W)
+static int utf8_limit_width(char *S, int W)
 {
 	int bytes = 0, b, cp, cpw;
 	while ((b = utf8_dechar(&cp, S)) && W) {
@@ -81,7 +113,7 @@ int utf8_limit_width(char *S, int W)
 	return bytes;
 }
 
-int spawn(int rw[2], pid_t *p, char **argv[])
+static int spawn(int rw[2], pid_t *p, char **argv[])
 {
 	int pair[2], l;
 
@@ -118,7 +150,7 @@ int spawn(int rw[2], pid_t *p, char **argv[])
 }
 
 /* TODO test other line endings like \r\n */
-int xgetline(int fd, char *buf, size_t bufs, char *b[2])
+static int xgetline(int fd, char *buf, size_t bufs, char *b[2])
 {
 	char *src, *dst;
 	size_t s;
@@ -162,7 +194,7 @@ int xgetline(int fd, char *buf, size_t bufs, char *b[2])
 	return L;
 }
 
-void entry_free(entry *H)
+static void entry_free(entry *H)
 {
 	entry *F;
 	while (H) {
@@ -172,7 +204,20 @@ void entry_free(entry *H)
 	}
 }
 
-int read_entries(int fd, entry **head, entry **last)
+static void entry_print_and_free(entry *H, int fd)
+{
+	entry *T;
+	while (H) {
+		if (fd != -1 && H->selected) {
+			dprintf(fd, "%s\n", H->str);
+		}
+		T = H;
+		H = H->next;
+		free(T);
+	}
+}
+
+static int read_entries(int fd, entry **head, entry **last)
 {
 	entry *q;
 	int n = 0, L;
@@ -197,7 +242,7 @@ int read_entries(int fd, entry **head, entry **last)
 	return n;
 }
 
-int str2num(char *s, int min, int max)
+static int str2num(char *s, int min, int max)
 {
 	int n = 0;
 
@@ -217,8 +262,6 @@ int str2num(char *s, int min, int max)
 	}
 	return n;
 }
-
-#define NO_ARG do { ++*argv; if (!(mid = **argv)) argv++; } while (0)
 
 static char *ARG(char ***argv)
 {
@@ -249,7 +292,7 @@ static char* EARG(char ***argv)
 	return a;
 }
 
-char* basename(char *S)
+static char* basename(char *S)
 {
 	char *s = S;
 	while (*s) s++;
@@ -258,10 +301,7 @@ char* basename(char *S)
 	return s;
 }
 
-static char *default_delim = "|";
-static char *default_subst = "{}";
-
-void usage(char *argv0)
+static void usage(char *argv0)
 {
 	dprintf(2, "Usage: %s [options]\n", basename(argv0));
 	dprintf(2,
@@ -274,17 +314,13 @@ void usage(char *argv0)
 	);
 }
 
-static int g_winw = 0;
-static int g_winh = 0;
-static int list_height = -1;
-
 static void sighandler(int sig)
 {
 	switch (sig) {
 	case SIGWINCH:
 		get_win_dims(2, &g_winw, &g_winh);
-		if (list_height >= g_winh) {
-			list_height = g_winh-1;
+		if (g_list_height >= g_winh) {
+			g_list_height = g_winh-1;
 		}
 		break;
 	case SIGTERM:
@@ -300,22 +336,22 @@ static void prepare_window(int fd, int *x, int *y)
 	int i;
 
 	*x = 1;
-	if (list_height == -1) {
-		list_height = g_winh-1;
+	if (g_list_height == -1) {
+		g_list_height = g_winh-1;
 	}
-	if (g_winh < *y + list_height) {
-		*y = g_winh - (list_height + 1) + 1;
-		for (i = 0; i < list_height; i++) {
+	if (g_winh < *y + g_list_height) {
+		*y = g_winh - (g_list_height + 1) + 1;
+		for (i = 0; i < g_list_height; i++) {
 			write(fd, "\r\n", 2);
 		}
 	}
 }
 
-static void view_range_make(entry *view_range[2], int list_height, entry *L)
+static void view_range_make(entry *view_range[2], int g_list_height, entry *L)
 {
 	view_range[0] = view_range[1] = L;
-	list_height--; /* Already have the first one. It's view_range[0] */
-	while (list_height-- && view_range[1]->next) {
+	g_list_height--; /* Already have the first one. It's view_range[0] */
+	while (g_list_height-- && view_range[1]->next) {
 		view_range[1] = view_range[1]->next;
 	}
 }
@@ -378,14 +414,15 @@ int main(int argc, char *argv[])
 	     *argv0, **arg[ARG_MAX+1];
 	int rw[2], wstatus, n = 0, x, y, utflen;
 	int selected = 0;
-	int inputfd = 0;
-	int drawfd = 2;
+	int inputfd = 0, drawfd = 2;
 	pid_t p[3];
 	_Bool mid = 0, update = 1, from_stdin = 1;
 	struct termios old;
 	struct sigaction sa;
 	edit E;
-	entry *H = 0, *L = 0, *highlight = 0;
+	entry *filtered[2] = { 0, 0 };
+	entry *highlight = 0;
+	entry *original[2] = { 0, 0 };
 	entry *view_range[2] = { 0, 0 };
 	input I;
 
@@ -402,7 +439,7 @@ int main(int argc, char *argv[])
 		}
 		switch (**argv) {
 		case 'L':
-			list_height = str2num(EARG(&argv), 1, 1000); // TODO
+			g_list_height = str2num(EARG(&argv), 1, 1000); // TODO
 			break;
 		case 'd':
 			delim = EARG(&argv);
@@ -460,11 +497,9 @@ int main(int argc, char *argv[])
 	if (from_stdin) {
 		highlight = 0;
 		view_range[0] = view_range[1] = 0;
-		entry_free(H);
-		H = L = highlight = 0;
-		read_entries(0, &H, &L);
-		if (H) {
-			view_range_make(view_range, list_height, H);
+		read_entries(0, &original[0], &original[1]);
+		if (original[0]) {
+			view_range_make(view_range, g_list_height, original[0]);
 			highlight = view_range[0];
 		}
 		else {
@@ -491,33 +526,32 @@ int main(int argc, char *argv[])
 
 	for (;;) {
 		if (from_stdin) {
-
+			//spawn(rw, p, arg);
+			//TODO
 		}
 		if (update && !from_stdin) {
 			update = 0;
 			selected = 0;
 			highlight = 0;
 			view_range[0] = view_range[1] = 0;
-			entry_free(H);
-			H = L = highlight = 0;
-			if (*E.begin || 1) {
-				spawn(rw, p, arg);
-				//close(rw[1]); /* TODO */
+			entry_free(filtered[0]);
+			filtered[0] = filtered[1] = highlight = 0;
+			spawn(rw, p, arg);
+			//close(rw[1]); /* TODO */
 
-				read_entries(rw[0], &H, &L);
-				//close(rw[0]);
-				if (H) {
-					view_range_make(view_range, list_height, H);
-					highlight = view_range[0];
-					wait(&wstatus);
-				}
+			read_entries(rw[0], &filtered[0], &filtered[1]);
+			//close(rw[0]);
+			if (filtered[0]) {
+				view_range_make(view_range, g_list_height, filtered[0]);
+				highlight = view_range[0];
+				wait(&wstatus);
 			}
 		}
 
 		set_cur_pos(drawfd, x, y);
-		draw_view_range(drawfd, view_range, highlight, g_winw, list_height);
+		draw_view_range(drawfd, view_range, highlight, g_winw, g_list_height);
 		dprintf(drawfd, "%s> %.*s", CSI_CLEAR_LINE, (int)(E.end-E.begin), E.begin);
-		set_cur_pos(drawfd, 1+E.cur_x+2, y+list_height);
+		set_cur_pos(drawfd, 1+E.cur_x+2, y+g_list_height);
 		write(drawfd, SL(CSI_CURSOR_SHOW));
 		I = get_input(inputfd);
 		write(drawfd, SL(CSI_CURSOR_HIDE));
@@ -549,10 +583,10 @@ int main(int argc, char *argv[])
 				edit_delete(&E, 1);
 				break;
 			case S_PAGE_UP:
-				view_range_move(view_range, &highlight, -list_height);
+				view_range_move(view_range, &highlight, -g_list_height);
 				break;
 			case S_PAGE_DOWN:
-				view_range_move(view_range, &highlight, list_height);
+				view_range_move(view_range, &highlight, g_list_height);
 				break;
 			case S_ARROW_UP:
 				view_range_move(view_range, &highlight, -1);
@@ -591,9 +625,9 @@ int main(int argc, char *argv[])
 	}
 end:
 	set_cur_pos(drawfd, x, y);
-	for (int i = 0; i < list_height+1; i++) {
+	for (int i = 0; i < g_list_height+1; i++) {
 		dprintf(drawfd, "%s", CSI_CLEAR_LINE);
-		if (i != list_height) {
+		if (i != g_list_height) {
 			dprintf(drawfd, "\r\n");
 		}
 	}
@@ -605,15 +639,7 @@ end:
 		dprintf(1, "%s\n", highlight->str);
 	}
 	else {
-		entry *T;
-		while (H) {
-			if (H->selected) {
-				dprintf(1, "%s\n", H->str);
-			}
-			T = H;
-			H = H->next;
-			free(T);
-		}
+		entry_print_and_free(filtered[0], 1);
 	}
 	//entry_free(H);
 	return 0;
