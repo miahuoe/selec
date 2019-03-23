@@ -41,11 +41,10 @@ SOFTWARE.
 #include "terminal.h"
 #include "edit.h"
 
-#define ARG_MAX 512
-
 #define NO_ARG do { ++*argv; if (!(mid = **argv)) argv++; } while (0)
 
 /* TODO
+ * - adjust highlight after change
  * - match fragment highlight
  * - do pgup/pgdown differently
  * - on small number of entries use stack, not heap
@@ -66,7 +65,7 @@ static int utf8_limit_width(char*, int);
 static int xgetline(int, char*, size_t, char *[2]);
 //static void entry_free(entry*);
 static void entry_print_and_free(entry*, int);
-static int entry_match(entry*, char*, int);
+static int entry_match(entry*, entry**, char*, int);
 static int read_entries(int, entry**, entry**);
 static int str2num(char*, int, int);
 static char* EARG(char***);
@@ -76,12 +75,9 @@ static void usage(char*);
 static void setup_signals(void);
 static void sighandler(int);
 static void prepare_window(int, int*, int*);
-static void view_range_make(entry*[2], int, entry*);
-static void view_range_move(entry*[2], entry **, int);
-static void draw_view_range(int, entry*[2], entry*, int, int);
-
-static char *default_delim = "|";
-static char *default_subst = "{}";
+static void view_range_draw(int, entry**, int, int, int, int);
+static void view_range_move(entry**, int*, int, int*, int);
+static void fill_visible(entry*, entry**);
 
 /* Global, because sighandler must be able to resize window */
 static int g_winw = 0;
@@ -101,18 +97,19 @@ static void err(const char *fmt, ...)
 static int digits(int n)
 {
 	int d = 0;
-	if (n == 0) return 1;
+
 	while (n) {
 		n /= 10;
 		d++;
 	}
-	return d;
+	return d ? d : 1;
 }
 
 /* Returns the number of bytes that have maximum width W */
 static int utf8_limit_width(char *S, int W)
 {
 	int bytes = 0, b, cp, cpw;
+
 	while ((b = utf8_dechar(&cp, S)) && W) {
 		cpw = utf8_cp2w(cp);
 		if (W < cpw) break;
@@ -191,7 +188,7 @@ static void entry_print_and_free(entry *H, int fd)
 	}
 }
 
-static int entry_match(entry *H, char *reg, int cflags)
+static int entry_match(entry *H, entry **L, char *reg, int cflags)
 {
 	regex_t R;
 	int n = 0, e, eflags = 0;
@@ -200,9 +197,16 @@ static int entry_match(entry *H, char *reg, int cflags)
 	e = regcomp(&R, reg, cflags);
 	if (e) return 0;
 
+	*L = 0;
+	L++;
 	while (H) {
-		H->match = 0 == regexec(&R, H->str, 1, &pmatch, eflags);
-		n += H->match;
+		if (0 == regexec(&R, H->str, 1, &pmatch, eflags)) {
+			H->match = 1;
+			*L = H;
+			L++;
+			*L = 0;
+			n++;
+		}
 		H = H->next;
 	}
 	regfree(&R);
@@ -298,12 +302,8 @@ static void usage(char *argv0)
 	dprintf(2, "Usage: %s [options]\n", basename(argv0));
 	dprintf(2,
 	"Options:\n"
-	"    -h     Display this help message and exit.\n"
-	"    -d C   Set delimiter. Default: %s\n"
-	"    -s C   Set substitution. Default: %s\n",
-	default_delim,
-	default_subst
-	);
+	"    -E     Use extended regex.\n"
+	"    -h     Display this help message and exit.\n");
 }
 
 static void setup_signals(void)
@@ -350,99 +350,79 @@ static void prepare_window(int fd, int *x, int *y)
 	}
 }
 
-static void view_range_make(entry *vr[2], int list_height, entry *L)
+static void view_range_draw(int fd, entry **L, int view_start, int hl, int W, int H)
 {
-	vr[0] = vr[1] = L;
-	while (!vr[0]->match) {
-		vr[0] = vr[0]->next;
-	}
-	list_height--;
-	while (list_height && vr[1]->next) {
-		if (vr[1]->match) {
-			list_height--;
-		}
-		vr[1] = vr[1]->next;
-	}
-}
-
-static void view_range_move(entry *vr[2], entry **hl, int n)
-{
-	/* TODO offsetof? */
-	entry *last_visible = 0;
-	if (n > 0) {
-		while (n-- && *hl && (*hl)->next) {
-			if ((*hl)->match) {
-				last_visible = *hl;
-			}
-			if (*hl == vr[1]) {
-				vr[1] = vr[1]->next;
-				vr[0] = vr[0]->next;
-			}
-			*hl = (*hl)->next;
-		}
-	}
-	else if (n < 0) {
-		while (n++ && *hl && (*hl)->prev) {
-			if ((*hl)->match) {
-				last_visible = *hl;
-			}
-			if (*hl == vr[0]) {
-				vr[1] = vr[1]->prev;
-				vr[0] = vr[0]->prev;
-			}
-			*hl = (*hl)->prev;
-		}
-	}
-	if (!(*hl)->match) {
-		*hl = last_visible;
-	}
-}
-
-static void draw_view_range(int fd, entry *vr[2], entry *hl, int W, int H)
-{
-	entry *w;
-	int b;
-
-	w = vr[0];
-	while (w && H) {
-		if (!w->match) {
-			w = w->next;
-			continue;
-		}
-		if (w == hl) {
+	while (L[view_start] && H) {
+		if (view_start == hl) {
 			dprintf(fd, "\x1b[%c%cm", '3', '0');
 			dprintf(fd, "\x1b[%c%cm", '4', '7');
 		}
-		b = utf8_limit_width(w->str, W-2);
 		dprintf(fd, "%s%c %.*s", CSI_CLEAR_LINE,
-			w == hl || w->selected ? '>' : ' ', b, w->str);
-		if (w == hl) {
+			view_start == hl || L[view_start]->selected ? '>' : ' ',
+			utf8_limit_width(L[view_start]->str, W-2),
+			L[view_start]->str);
+		if (view_start == hl) {
 			dprintf(fd, "\x1b[%cm", '0');
 		}
 		dprintf(fd, "\r\n");
-		w = w->next;
+		view_start++;
 		H--;
 	}
 	while (H) {
-		dprintf(fd, "%s \r\n", CSI_CLEAR_LINE);
+		dprintf(fd, "%s\r\n", CSI_CLEAR_LINE);
 		H--;
+	}
+}
+
+static void view_range_move(entry **L, int *view_start, int list_height, int *hl, int y)
+{
+	if (y > 0) {
+		while (y-- && L[(*view_start)+1]) {
+			if (L[1+*hl] && (*view_start)+list_height == 1+*hl) {
+				++*view_start;
+			}
+			if (L[1+*hl]) {
+				++*hl;
+			}
+		}
+	}
+	else if (y < 0) {
+		while (y++ && L[(*view_start)-1]) {
+			if (L[-1+*hl] && (*view_start)-1 == -1+*hl) {
+				--*view_start;
+			}
+			if (L[-1+*hl]) {
+				--*hl;
+			}
+		}
+	}
+}
+
+static void fill_visible(entry *H, entry **L)
+{
+	L++;
+	while (H) {
+		*L = H;
+		L++;
+		*L = 0;
+		H = H->next;
 	}
 }
 
 int main(int argc, char *argv[])
 {
-	char s[4*1024];
-	char *argv0;
-	int x, y, utflen;
+	char s[4*1024], *argv0;
+	int x, y, utflen, d, i;
 	int selected = 0, num = 0, matching;
 	int inputfd = 0, drawfd = 2;
 	int cflags = REG_EXTENDED | REG_ICASE | REG_NEWLINE;
 	_Bool mid = 0, update = 1;
 	struct termios old;
 	edit E;
-	entry *highlight = 0;
+	int view_start; // TODO -> view[2]
+	int highlight; // TODO find after change
+	entry **visible; // TODO simplify
 	entry *list[2] = { 0, 0 };
-	entry *view_range[2] = { 0, 0 };
 	input I;
 
 	(void)argc;
@@ -475,7 +455,7 @@ int main(int argc, char *argv[])
 	/*
 	 * fisel is passed data via stdin.
 	 * Like so: some-command | fisel
-	 * In such case user input will be available in /dev/tty
+	 * User input will be available in /dev/tty
 	 */
 	if (isatty(0)) {
 		usage(argv0);
@@ -487,7 +467,12 @@ int main(int argc, char *argv[])
 			err("Failed to open /dev/tty.\n");
 		}
 		num = read_entries(0, &list[0], &list[1]);
-		highlight = list[0];
+
+		visible = malloc((num+2) * sizeof(entry*));
+		view_start = 1;
+		highlight = 1;
+		fill_visible(list[0], visible);
+
 		if (num == 0) {
 			usage(argv0);
 			return 0;
@@ -506,23 +491,15 @@ int main(int argc, char *argv[])
 	for (;;) {
 		if (update) {
 			update = 0;
-			view_range[0] = view_range[1] = 0;
-
-			matching = entry_match(list[0], E.begin, cflags);
-			if (matching) {
-				view_range_make(view_range, g_list_height, list[0]);
-				if (highlight && !highlight->match) {
-					highlight = view_range[0];
-				}
-			}
+			matching = entry_match(list[0], visible, E.begin, cflags);
 		}
 
 		set_cur_pos(drawfd, x, y);
-		draw_view_range(drawfd, view_range, highlight, g_winw, g_list_height);
+		view_range_draw(drawfd, visible, view_start, highlight, g_winw, g_list_height);
 		write(drawfd, SL(CSI_CLEAR_LINE));
 
-		int d = digits(num);
-		int i = dprintf(drawfd, "%*d/%*d/%d > ", d, selected, d, matching, num);
+		d = digits(num);
+		i = dprintf(drawfd, "%*d/%*d/%d > ", d, selected, d, matching, num);
 		dprintf(drawfd, "%.*s", (int)(E.end-E.begin), E.begin);
 
 		set_cur_pos(drawfd, 1+E.cur_x+i, y+g_list_height);
@@ -557,16 +534,20 @@ int main(int argc, char *argv[])
 				edit_delete(&E, 1);
 				break;
 			case S_PAGE_UP:
-				view_range_move(view_range, &highlight, -g_list_height);
+				view_range_move(visible, &view_start,
+					g_list_height, &highlight, -g_list_height);
 				break;
 			case S_PAGE_DOWN:
-				view_range_move(view_range, &highlight, g_list_height);
+				view_range_move(visible, &view_start,
+					g_list_height, &highlight, g_list_height);
 				break;
 			case S_ARROW_UP:
-				view_range_move(view_range, &highlight, -1);
+				view_range_move(visible, &view_start,
+					g_list_height, &highlight, -1);
 				break;
 			case S_ARROW_DOWN:
-				view_range_move(view_range, &highlight, 1);
+				view_range_move(visible, &view_start,
+					g_list_height, &highlight, 1);
 				break;
 			case S_ARROW_LEFT:
 				edit_move(&E, -1);
@@ -589,8 +570,8 @@ int main(int argc, char *argv[])
 				goto end;
 			case 'I': /* TAB */
 				if (highlight) {
-					highlight->selected = !highlight->selected;
-					selected += highlight->selected ? 1 : -1;
+					visible[highlight]->selected = !visible[highlight]->selected;
+					selected += visible[highlight]->selected ? 1 : -1;
 				}
 				break;
 			}
@@ -599,7 +580,7 @@ int main(int argc, char *argv[])
 	}
 end:
 	set_cur_pos(drawfd, x, y);
-	for (int i = 0; i < g_list_height+1; i++) {
+	for (i = 0; i < g_list_height+1; i++) {
 		dprintf(drawfd, "%s", CSI_CLEAR_LINE);
 		if (i != g_list_height) {
 			dprintf(drawfd, "\r\n");
@@ -610,7 +591,7 @@ end:
 	write(drawfd, SL(CSI_CURSOR_SHOW));
 
 	if (!selected && highlight) {
-		dprintf(1, "%s\n", highlight->str);
+		dprintf(1, "%s\n", visible[highlight]->str);
 	}
 	else {
 		entry_print_and_free(list[0], 1);
