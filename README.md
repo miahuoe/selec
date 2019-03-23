@@ -1,18 +1,15 @@
 # fisel
-Similar to [fzf](https://github.com/junegunn/fzf) but I took it and attempted to make it more minimal. And there it is.
-
-# Usage
-Mimic fzf: `find . | fisel`
+Dynamic (fuzzy) finder similar to [fzf](https://github.com/junegunn/fzf) but very small.
 
 # TODOs
-- packaging
-- multiselect
-- "slient" commands
-- extend readme
+- Speed up
+- Packaging
 - ...
+
+# Cons
+- VERY SLOW
+- Limited
+- Only regex
 
 # Name
 FInd & SELect
-
-# Thank you
-[fzf](https://github.com/junegunn/fzf) is a great tool. Thanks devs!
