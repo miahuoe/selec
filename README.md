@@ -1,10 +1,8 @@
-# intr
-Same as [entr](http://eradman.com/entrproject/) but it runs arbitrary commands as you TYPE
-I basically took [fzf](https://github.com/junegunn/fzf) and attempted to make it more minimal. And there it is.
+# fisel
+Similar to [fzf](https://github.com/junegunn/fzf) but I took it and attempted to make it more minimal. And there it is.
 
 # Usage
-Mimic fzf: `intr find . \| grep {}`
-Play with regex: `intr grep -E {} < file.txt`
+Mimic fzf: `find . | fisel`
 
 # TODOs
 - packaging
@@ -13,5 +11,8 @@ Play with regex: `intr grep -E {} < file.txt`
 - extend readme
 - ...
 
+# Name
+FInd & SELect
+
 # Thank you
-[entr](http://eradman.com/entrproject/) and [fzf](https://github.com/junegunn/fzf) are great tools. Thanks devs!
+[fzf](https://github.com/junegunn/fzf) is a great tool. Thanks devs!

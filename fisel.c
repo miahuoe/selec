@@ -36,6 +36,7 @@ SOFTWARE.
 #include <sys/select.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <regex.h>
 
 #include "terminal.h"
 #include "edit.h"
@@ -45,8 +46,7 @@ SOFTWARE.
 #define NO_ARG do { ++*argv; if (!(mid = **argv)) argv++; } while (0)
 
 /* TODO
- * - test & rename spawn()
- * - copy selection on rescan
+ * - match fragment highlight
  * - do pgup/pgdown differently
  * - on small number of entries use stack, not heap
  */
@@ -55,31 +55,30 @@ typedef struct entry {
 	struct entry *next;
 	struct entry *prev;
 	_Bool selected;
+	_Bool match;
 	unsigned short L;
 	char str[];
 } entry;
 
 static void err(const char*, ...);
+static int digits(int);
 static int utf8_limit_width(char*, int);
-static int spawn(int [2], pid_t*, char**[]);
 static int xgetline(int, char*, size_t, char *[2]);
-static void entry_free(entry*);
+//static void entry_free(entry*);
 static void entry_print_and_free(entry*, int);
+static int entry_match(entry*, char*, int);
 static int read_entries(int, entry**, entry**);
 static int str2num(char*, int, int);
 static char* EARG(char***);
 static char *ARG(char***);
 static char* basename(char*);
 static void usage(char*);
+static void setup_signals(void);
 static void sighandler(int);
 static void prepare_window(int, int*, int*);
 static void view_range_make(entry*[2], int, entry*);
 static void view_range_move(entry*[2], entry **, int);
 static void draw_view_range(int, entry*[2], entry*, int, int);
-
-/* from terminal.h */
-extern char *special_type_str[];
-extern s2s seq2special[];
 
 static char *default_delim = "|";
 static char *default_subst = "{}";
@@ -99,6 +98,17 @@ static void err(const char *fmt, ...)
 	exit(EXIT_FAILURE);
 }
 
+static int digits(int n)
+{
+	int d = 0;
+	if (n == 0) return 1;
+	while (n) {
+		n /= 10;
+		d++;
+	}
+	return d;
+}
+
 /* Returns the number of bytes that have maximum width W */
 static int utf8_limit_width(char *S, int W)
 {
@@ -111,42 +121,6 @@ static int utf8_limit_width(char *S, int W)
 		S += b;
 	}
 	return bytes;
-}
-
-static int spawn(int rw[2], pid_t *p, char **argv[])
-{
-	int pair[2], l;
-
-	/* pipe: [0] = read, [1] = write */
-	if (pipe(pair)) {
-		return -1;
-	}
-	l = pair[0];
-	rw[1] = pair[1];
-	while (*argv) {
-		if (pipe(pair) || (*p = fork()) == -1) { /* TODO vfork() ? */
-			return -1;
-		}
-		if (*p == 0) {
-			close(rw[0]);
-			close(rw[1]);
-
-			dup2(l, 0);
-
-			dup2(pair[1], 1);
-			close(pair[0]);
-
-			execvp((*argv)[0], *argv);
-			exit(EXIT_FAILURE);
-		}
-		close(l);
-		close(pair[1]);
-		l = pair[0];
-		argv++;
-		p++;
-	}
-	rw[0] = l;
-	return 0;
 }
 
 /* TODO test other line endings like \r\n */
@@ -193,7 +167,7 @@ static int xgetline(int fd, char *buf, size_t bufs, char *b[2])
 	}
 	return L;
 }
-
+#if 0
 static void entry_free(entry *H)
 {
 	entry *F;
@@ -203,7 +177,7 @@ static void entry_free(entry *H)
 		free(F);
 	}
 }
-
+#endif
 static void entry_print_and_free(entry *H, int fd)
 {
 	entry *T;
@@ -217,11 +191,29 @@ static void entry_print_and_free(entry *H, int fd)
 	}
 }
 
+static int entry_match(entry *H, char *reg, int cflags)
+{
+	regex_t R;
+	int n = 0, e, eflags = 0;
+	regmatch_t pmatch;
+
+	e = regcomp(&R, reg, cflags);
+	if (e) return 0;
+
+	while (H) {
+		H->match = 0 == regexec(&R, H->str, 1, &pmatch, eflags);
+		n += H->match;
+		H = H->next;
+	}
+	regfree(&R);
+	return n;
+}
+
 static int read_entries(int fd, entry **head, entry **last)
 {
 	entry *q;
 	int n = 0, L;
-	char buf[BUFSIZ];
+	char buf[128];
 	char *b[2] = { buf, buf };
 
 	*head = 0;
@@ -239,7 +231,7 @@ static int read_entries(int fd, entry **head, entry **last)
 		*last = q;
 		n++;
 	}
-	return n;
+	return L == -2 ? -1 : n;
 }
 
 static int str2num(char *s, int min, int max)
@@ -314,6 +306,17 @@ static void usage(char *argv0)
 	);
 }
 
+static void setup_signals(void)
+{
+	struct sigaction sa;
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = sighandler;
+	sigaction(SIGWINCH, &sa, 0);
+	sigaction(SIGTERM, &sa, 0);
+	sigaction(SIGINT, &sa, 0);
+}
+
 static void sighandler(int sig)
 {
 	switch (sig) {
@@ -347,53 +350,73 @@ static void prepare_window(int fd, int *x, int *y)
 	}
 }
 
-static void view_range_make(entry *view_range[2], int g_list_height, entry *L)
+static void view_range_make(entry *vr[2], int list_height, entry *L)
 {
-	view_range[0] = view_range[1] = L;
-	g_list_height--; /* Already have the first one. It's view_range[0] */
-	while (g_list_height-- && view_range[1]->next) {
-		view_range[1] = view_range[1]->next;
+	vr[0] = vr[1] = L;
+	while (!vr[0]->match) {
+		vr[0] = vr[0]->next;
+	}
+	list_height--;
+	while (list_height && vr[1]->next) {
+		if (vr[1]->match) {
+			list_height--;
+		}
+		vr[1] = vr[1]->next;
 	}
 }
 
-static void view_range_move(entry *view_range[2], entry **highlight, int n)
+static void view_range_move(entry *vr[2], entry **hl, int n)
 {
 	/* TODO offsetof? */
+	entry *last_visible = 0;
 	if (n > 0) {
-		while (n-- && *highlight && (*highlight)->next) {
-			if (*highlight == view_range[1]) {
-				view_range[1] = view_range[1]->next;
-				view_range[0] = view_range[0]->next;
+		while (n-- && *hl && (*hl)->next) {
+			if ((*hl)->match) {
+				last_visible = *hl;
 			}
-			*highlight = (*highlight)->next;
+			if (*hl == vr[1]) {
+				vr[1] = vr[1]->next;
+				vr[0] = vr[0]->next;
+			}
+			*hl = (*hl)->next;
 		}
 	}
 	else if (n < 0) {
-		while (n++ && *highlight && (*highlight)->prev) {
-			if (*highlight == view_range[0]) {
-				view_range[1] = view_range[1]->prev;
-				view_range[0] = view_range[0]->prev;
+		while (n++ && *hl && (*hl)->prev) {
+			if ((*hl)->match) {
+				last_visible = *hl;
 			}
-			*highlight = (*highlight)->prev;
+			if (*hl == vr[0]) {
+				vr[1] = vr[1]->prev;
+				vr[0] = vr[0]->prev;
+			}
+			*hl = (*hl)->prev;
 		}
+	}
+	if (!(*hl)->match) {
+		*hl = last_visible;
 	}
 }
 
-static void draw_view_range(int fd, entry *view_range[2], entry *highlight, int W, int H)
+static void draw_view_range(int fd, entry *vr[2], entry *hl, int W, int H)
 {
 	entry *w;
 	int b;
 
-	w = view_range[0];
+	w = vr[0];
 	while (w && H) {
-		if (w == highlight) {
+		if (!w->match) {
+			w = w->next;
+			continue;
+		}
+		if (w == hl) {
 			dprintf(fd, "\x1b[%c%cm", '3', '0');
 			dprintf(fd, "\x1b[%c%cm", '4', '7');
 		}
 		b = utf8_limit_width(w->str, W-2);
 		dprintf(fd, "%s%c %.*s", CSI_CLEAR_LINE,
-			w == highlight || w->selected ? '>' : ' ', b, w->str);
-		if (w == highlight) {
+			w == hl || w->selected ? '>' : ' ', b, w->str);
+		if (w == hl) {
 			dprintf(fd, "\x1b[%cm", '0');
 		}
 		dprintf(fd, "\r\n");
@@ -409,20 +432,16 @@ static void draw_view_range(int fd, entry *view_range[2], entry *highlight, int 
 int main(int argc, char *argv[])
 {
 	char s[4*1024];
-	char *delim = default_delim,
-	     *subst = default_subst,
-	     *argv0, **arg[ARG_MAX+1];
-	int rw[2], wstatus, n = 0, x, y, utflen;
-	int selected = 0;
+	char *argv0;
+	int x, y, utflen;
+	int selected = 0, num = 0, matching;
 	int inputfd = 0, drawfd = 2;
-	pid_t p[3];
-	_Bool mid = 0, update = 1, from_stdin = 1;
+	int cflags = REG_EXTENDED | REG_ICASE | REG_NEWLINE;
+	_Bool mid = 0, update = 1;
 	struct termios old;
-	struct sigaction sa;
 	edit E;
-	entry *filtered[2] = { 0, 0 };
 	entry *highlight = 0;
-	entry *original[2] = { 0, 0 };
+	entry *list[2] = { 0, 0 };
 	entry *view_range[2] = { 0, 0 };
 	input I;
 
@@ -441,12 +460,6 @@ int main(int argc, char *argv[])
 		case 'L':
 			g_list_height = str2num(EARG(&argv), 1, 1000); // TODO
 			break;
-		case 'd':
-			delim = EARG(&argv);
-			break;
-		case 's':
-			subst = EARG(&argv);
-			break;
 		case 'h':
 			usage(argv0);
 			NO_ARG;
@@ -457,63 +470,29 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	/*
-	 * arg[] will contain pointers from argv[].
-	 * argv[] will be zeroed at delimiters.
-	 */
-	arg[n] = argv;
-	arg[n+1] = 0;
-	while (*argv) {
-		if (!strcmp(*argv, delim)) {
-			*argv = 0;
-			n++;
-			if (n >= ARG_MAX) {
-				err("error: too many commands\n");
-			}
-			argv++;
-			arg[n] = argv;
-			arg[n+1] = 0;
-		}
-		else if (!strcmp(*argv, subst)) {
-			*argv = s;
-		}
-		argv++;
-	}
+	setup_signals();
 
 	/*
-	 * intr may be passed data via stdin.
-	 * Like so: some-command | intr
+	 * fisel is passed data via stdin.
+	 * Like so: some-command | fisel
 	 * In such case user input will be available in /dev/tty
 	 */
-	from_stdin = !isatty(0);
-
-	if (from_stdin) {
+	if (isatty(0)) {
+		usage(argv0);
+		return 0;
+	}
+	else {
 		inputfd = open("/dev/tty", O_RDONLY);
 		if (inputfd == -1) {
 			err("Failed to open /dev/tty.\n");
 		}
-	}
-
-	if (from_stdin) {
-		highlight = 0;
-		view_range[0] = view_range[1] = 0;
-		read_entries(0, &original[0], &original[1]);
-		if (original[0]) {
-			view_range_make(view_range, g_list_height, original[0]);
-			highlight = view_range[0];
-		}
-		else {
+		num = read_entries(0, &list[0], &list[1]);
+		highlight = list[0];
+		if (num == 0) {
 			usage(argv0);
 			return 0;
 		}
 	}
-
-	/* Set signal handlers */
-	memset(&sa, 0, sizeof(sa));
-	sa.sa_handler = sighandler;
-	sigaction(SIGWINCH, &sa, 0);
-	sigaction(SIGTERM, &sa, 0);
-	sigaction(SIGINT, &sa, 0);
 
 	if (-1 == raw(&old, inputfd)) {
 		err("Couldn't initialize terminal.\n");
@@ -525,33 +504,28 @@ int main(int argc, char *argv[])
 	edit_init(&E, s, sizeof(s));
 
 	for (;;) {
-		if (from_stdin) {
-			//spawn(rw, p, arg);
-			//TODO
-		}
-		if (update && !from_stdin) {
+		if (update) {
 			update = 0;
-			selected = 0;
-			highlight = 0;
 			view_range[0] = view_range[1] = 0;
-			entry_free(filtered[0]);
-			filtered[0] = filtered[1] = highlight = 0;
-			spawn(rw, p, arg);
-			//close(rw[1]); /* TODO */
 
-			read_entries(rw[0], &filtered[0], &filtered[1]);
-			//close(rw[0]);
-			if (filtered[0]) {
-				view_range_make(view_range, g_list_height, filtered[0]);
-				highlight = view_range[0];
-				wait(&wstatus);
+			matching = entry_match(list[0], E.begin, cflags);
+			if (matching) {
+				view_range_make(view_range, g_list_height, list[0]);
+				if (highlight && !highlight->match) {
+					highlight = view_range[0];
+				}
 			}
 		}
 
 		set_cur_pos(drawfd, x, y);
 		draw_view_range(drawfd, view_range, highlight, g_winw, g_list_height);
-		dprintf(drawfd, "%s> %.*s", CSI_CLEAR_LINE, (int)(E.end-E.begin), E.begin);
-		set_cur_pos(drawfd, 1+E.cur_x+2, y+g_list_height);
+		write(drawfd, SL(CSI_CLEAR_LINE));
+
+		int d = digits(num);
+		int i = dprintf(drawfd, "%*d/%*d/%d > ", d, selected, d, matching, num);
+		dprintf(drawfd, "%.*s", (int)(E.end-E.begin), E.begin);
+
+		set_cur_pos(drawfd, 1+E.cur_x+i, y+g_list_height);
 		write(drawfd, SL(CSI_CURSOR_SHOW));
 		I = get_input(inputfd);
 		write(drawfd, SL(CSI_CURSOR_HIDE));
@@ -639,8 +613,7 @@ end:
 		dprintf(1, "%s\n", highlight->str);
 	}
 	else {
-		entry_print_and_free(filtered[0], 1);
+		entry_print_and_free(list[0], 1);
 	}
-	//entry_free(H);
 	return 0;
 }

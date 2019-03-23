@@ -3,17 +3,18 @@ LD = musl-gcc
 ERRLVL = -Wall -Wextra -pedantic -Wimplicit-fallthrough=0
 CFLAGS = -std=c99 -g $(ERRLVL)
 LDFLAGS = -static
+TARGET = fisel
 
-all : intr
+all : $(TARGET)
 
-intr : intr.o utf8.o terminal.o edit.o
+$(TARGET) : $(TARGET).o utf8.o terminal.o edit.o
 	$(LD) $(LDFLAGS) $^ -o $@
 
 %.o : %.c
 	$(CC) $(CFLAGS) -c $^ -o $@
 
-strip : intr
+strip : $(TARGET)
 	strip -S --strip-unneeded --remove-section=.note.gnu.gold-version --remove-section=.comment --remove-section=.note --remove-section=.note.gnu.build-id --remove-section=.note.ABI-tag $^
 
 clean :
-	rm -rf *.o intr
+	rm -rf *.o $(TARGET)
