@@ -318,9 +318,7 @@ static void sighandler(int sig)
 	switch (sig) {
 	case SIGWINCH:
 		get_win_dims(2, &winw, &winh);
-		if (list_height >= winh) {
-			list_height = winh-1;
-		}
+		list_height = winh-1;
 		break;
 	case SIGTERM:
 	case SIGINT:
