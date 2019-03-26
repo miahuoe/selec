@@ -44,16 +44,14 @@ SOFTWARE.
 #define NO_ARG do { ++*argv; if (!(mid = **argv)) argv++; } while (0)
 
 /* TODO
- * - limit edit line width
- * - adjust highlight after change
+ * - VEEEERY SLOW
+ * - exits on itself (?) when terminal changes size
+ * - long input must scroll
  * - match fragment highlight
- * - do pgup/pgdown differently
- * - on small number of entries use stack, not heap
  */
 
 typedef struct entry {
 	struct entry *next;
-	struct entry *prev;
 	_Bool selected;
 	unsigned short L;
 	char str[];
@@ -63,8 +61,8 @@ static void err(const char*, ...);
 static int digits(int);
 static int utf8_limit_width(char*, int);
 static int xgetline(int, char*, size_t, char *[2]);
-//static void entry_free(entry*);
-static void entry_print_and_free(entry*, int);
+static void entry_free(entry*);
+static void entry_print_matching_and_free(entry**, int);
 static int entry_match(entry*, entry**, char*, int);
 static int read_entries(int, entry**, entry**);
 static int str2num(char*, int, int);
@@ -77,12 +75,13 @@ static void sighandler(int);
 static void prepare_window(int, int*, int*);
 static void view_range_draw(int, entry**, int[2], int, int, int);
 static void view_range_move(entry**, int[2], int*, int);
-static void fill_visible(entry*, entry**);
+static void fill_matching(entry*, entry**);
 
 /* Global, because sighandler must be able to resize window */
-static int g_winw = 0;
-static int g_winh = 0;
-static int g_list_height = -1;
+static int winw = 0;
+static int winh = 0;
+static int list_height = -1;
+static struct termios old;
 
 static void err(const char *fmt, ...)
 {
@@ -164,7 +163,7 @@ static int xgetline(int fd, char *buf, size_t bufs, char *b[2])
 	}
 	return L;
 }
-#if 0
+
 static void entry_free(entry *H)
 {
 	entry *F;
@@ -174,17 +173,15 @@ static void entry_free(entry *H)
 		free(F);
 	}
 }
-#endif
-static void entry_print_and_free(entry *H, int fd)
+
+static void entry_print_matching_and_free(entry **M, int fd)
 {
-	entry *T;
-	while (H) {
-		if (fd != -1 && H->selected) {
-			dprintf(fd, "%s\n", H->str);
+	while (*M) {
+		if ((*M)->selected) {
+			dprintf(fd, "%s\n", (*M)->str);
 		}
-		T = H;
-		H = H->next;
-		free(T);
+		free(*M);
+		++M;
 	}
 }
 
@@ -216,13 +213,12 @@ static int read_entries(int fd, entry **head, entry **last)
 {
 	entry *q;
 	int n = 0, L;
-	char buf[128];
+	char buf[BUFSIZ];
 	char *b[2] = { buf, buf };
 
 	*head = 0;
 	while (0 <= (L = xgetline(fd, buf, sizeof(buf), b))) {
 		q = calloc(1, sizeof(entry)+L+1);
-		q->prev = *last;
 		q->L = L;
 		memcpy(q->str, buf, L+1);
 		if (!*head) {
@@ -321,13 +317,14 @@ static void sighandler(int sig)
 {
 	switch (sig) {
 	case SIGWINCH:
-		get_win_dims(2, &g_winw, &g_winh);
-		if (g_list_height >= g_winh) {
-			g_list_height = g_winh-1;
+		get_win_dims(2, &winw, &winh);
+		if (list_height >= winh) {
+			list_height = winh-1;
 		}
 		break;
 	case SIGTERM:
 	case SIGINT:
+		// TODO cleanup
 		exit(EXIT_SUCCESS);
 	default:
 		break;
@@ -339,12 +336,12 @@ static void prepare_window(int fd, int *x, int *y)
 	int i;
 
 	*x = 1;
-	if (g_list_height == -1) {
-		g_list_height = g_winh-1;
+	if (list_height == -1) {
+		list_height = winh-1;
 	}
-	if (g_winh < *y + g_list_height) {
-		*y = g_winh - (g_list_height + 1) + 1;
-		for (i = 0; i < g_list_height; i++) {
+	if (winh < *y + list_height) {
+		*y = winh - (list_height + 1) + 1;
+		for (i = 0; i < list_height; i++) {
 			write(fd, "\r\n", 2);
 		}
 	}
@@ -352,22 +349,29 @@ static void prepare_window(int fd, int *x, int *y)
 
 static void view_range_draw(int fd, entry **L, int view[2], int hl, int W, int H)
 {
-	int c;
+	int c, b, ind;
 
 	c = view[0];
 	while (L[c] && H) {
+		b = utf8_limit_width(L[c]->str, W-2);
+		ind = c == hl || L[c]->selected ? '>' : ' ';
 		if (c == hl) {
-			dprintf(fd, "\x1b[%c%cm", '3', '0');
-			dprintf(fd, "\x1b[%c%cm", '4', '7');
+			dprintf(fd,
+				"\x1b[%c%cm" /* CSI */
+				"\x1b[%c%cm" /* CSI */
+				"%s%c %.*s" /* entry */
+				"\x1b[%cm" /* CSI */
+				"\r\n", /* newline */
+				'3', '0',
+				'4', '7',
+				CSI_CLEAR_LINE, ind, b, L[c]->str,
+				'0');
 		}
-		dprintf(fd, "%s%c %.*s", CSI_CLEAR_LINE,
-			c == hl || L[c]->selected ? '>' : ' ',
-			utf8_limit_width(L[c]->str, W-2),
-			L[c]->str);
-		if (c == hl) {
-			dprintf(fd, "\x1b[%cm", '0');
+		else {
+			dprintf(fd,
+				"%s%c %.*s" "\r\n",
+				CSI_CLEAR_LINE, ind, b, L[c]->str);
 		}
-		dprintf(fd, "\r\n");
 		c++;
 		H--;
 	}
@@ -392,7 +396,7 @@ static void view_range_move(entry **L, int view[2], int *hl, int y)
 	}
 	else if (y < 0) {
 		while (y++) {
-			if (L[-1+*hl] && view[0]-1 == -1+*hl) {
+			if (L[-1+*hl] && view[0] == *hl) {
 				--view[0];
 				--view[1];
 			}
@@ -403,7 +407,7 @@ static void view_range_move(entry **L, int view[2], int *hl, int y)
 	}
 }
 
-static void fill_visible(entry *H, entry **L)
+static void fill_matching(entry *H, entry **L)
 {
 	L++;
 	while (H) {
@@ -417,16 +421,15 @@ static void fill_visible(entry *H, entry **L)
 int main(int argc, char *argv[])
 {
 	char s[4*1024], *argv0;
-	int x, y, utflen, d, i;
-	int selected = 0, num = 0, matching;
-	int inputfd = 0, drawfd = 2;
+	int x, y, d, i;
+	int selected = 0, num = 0, num_matching;
+	int inputfd = 0, outfd = 1, drawfd = 2;
 	int cflags = REG_ICASE | REG_NEWLINE;
 	_Bool mid = 0, update = 1;
-	struct termios old;
 	edit E;
 	int view[2];
 	int highlight; // TODO find after change
-	entry **visible; // TODO simplify
+	entry **matching; // TODO simplify
 	entry *list[2] = { 0, 0 };
 	input I;
 
@@ -451,7 +454,7 @@ int main(int argc, char *argv[])
 			NO_ARG;
 			break;
 		case 'L':
-			g_list_height = str2num(EARG(&argv), 1, 1000); // TODO
+			list_height = str2num(EARG(&argv), 1, 1000); // TODO
 			break;
 		case 'h':
 			usage(argv0);
@@ -481,11 +484,11 @@ int main(int argc, char *argv[])
 		}
 		num = read_entries(0, &list[0], &list[1]);
 
-		visible = malloc((num+2) * sizeof(entry*));
+		matching = malloc((num+2) * sizeof(entry*));
 		view[0] = 1;
-		view[1] = 1+(num < g_list_height ? num : g_list_height);
+		view[1] = 1+(num < list_height ? num : list_height);
 		highlight = 1;
-		fill_visible(list[0], visible);
+		fill_matching(list[0], matching);
 
 		if (num == 0) {
 			usage(argv0);
@@ -498,28 +501,29 @@ int main(int argc, char *argv[])
 	}
 	write(drawfd, SL(CSI_CURSOR_HIDE));
 	get_cur_pos(drawfd, &x, &y);
-	get_win_dims(drawfd, &g_winw, &g_winh);
+	get_win_dims(drawfd, &winw, &winh);
 	prepare_window(drawfd, &x, &y);
 	edit_init(&E, s, sizeof(s));
 
 	for (;;) {
 		if (update) {
 			update = 0;
-			matching = entry_match(list[0], visible, E.begin, cflags);
+			num_matching = entry_match(list[0], matching, E.begin, cflags);
 			view[0] = 1;
-			view[1] = 1+(matching < g_list_height ? matching : g_list_height);
+			view[1] = 1+(num_matching < list_height ? num_matching : list_height);
 			highlight = 1;
 		}
 
 		set_cur_pos(drawfd, x, y);
-		view_range_draw(drawfd, visible, view, highlight, g_winw, g_list_height);
+		view_range_draw(drawfd, matching, view, highlight, winw, list_height);
 		write(drawfd, SL(CSI_CLEAR_LINE));
 
 		d = digits(num);
-		i = dprintf(drawfd, "%*d/%*d/%d > ", d, selected, d, matching, num);
-		dprintf(drawfd, "%.*s", (int)(E.end-E.begin), E.begin);
+		i = dprintf(drawfd, "%*d/%*d/%d > ", d, selected, d, num_matching, num);
+		dprintf(drawfd, "%.*s", utf8_limit_width(E.begin, winw-i), E.begin);
 
-		set_cur_pos(drawfd, 1+E.cur_x+i, y+g_list_height);
+		set_cur_pos(drawfd, 1+E.cur_x+i, y+list_height);
+
 		write(drawfd, SL(CSI_CURSOR_SHOW));
 		I = get_input(inputfd);
 		write(drawfd, SL(CSI_CURSOR_HIDE));
@@ -533,8 +537,7 @@ int main(int argc, char *argv[])
 			goto end;
 		case IT_UTF8:
 			update = 1;
-			utflen = utf8_b2len(I.utf);
-			edit_insert(&E, I.utf, utflen);
+			edit_insert(&E, I.utf, utf8_b2len(I.utf));
 			break;
 		case IT_SPEC:
 			switch (I.s) {
@@ -551,16 +554,16 @@ int main(int argc, char *argv[])
 				edit_delete(&E, 1);
 				break;
 			case S_PAGE_UP:
-				view_range_move(visible, view, &highlight, -g_list_height);
+				view_range_move(matching, view, &highlight, -list_height);
 				break;
 			case S_PAGE_DOWN:
-				view_range_move(visible, view, &highlight, g_list_height);
+				view_range_move(matching, view, &highlight, list_height);
 				break;
 			case S_ARROW_UP:
-				view_range_move(visible, view, &highlight, -1);
+				view_range_move(matching, view, &highlight, -1);
 				break;
 			case S_ARROW_DOWN:
-				view_range_move(visible, view, &highlight, 1);
+				view_range_move(matching, view, &highlight, 1);
 				break;
 			case S_ARROW_LEFT:
 				edit_move(&E, -1);
@@ -583,8 +586,8 @@ int main(int argc, char *argv[])
 				goto end;
 			case 'I': /* TAB */
 				if (highlight) {
-					visible[highlight]->selected = !visible[highlight]->selected;
-					selected += visible[highlight]->selected ? 1 : -1;
+					matching[highlight]->selected = !matching[highlight]->selected;
+					selected += matching[highlight]->selected ? 1 : -1;
 				}
 				break;
 			}
@@ -593,9 +596,9 @@ int main(int argc, char *argv[])
 	}
 end:
 	set_cur_pos(drawfd, x, y);
-	for (i = 0; i < g_list_height+1; i++) {
+	for (i = 0; i < list_height+1; i++) {
 		dprintf(drawfd, "%s", CSI_CLEAR_LINE);
-		if (i != g_list_height) {
+		if (i != list_height) {
 			dprintf(drawfd, "\r\n");
 		}
 	}
@@ -604,10 +607,11 @@ end:
 	write(drawfd, SL(CSI_CURSOR_SHOW));
 
 	if (!selected && highlight) {
-		dprintf(1, "%s\n", visible[highlight]->str);
+		dprintf(outfd, "%s\n", matching[highlight]->str);
+		entry_free(list[0]);
 	}
 	else {
-		entry_print_and_free(list[0], 1);
+		entry_print_matching_and_free(matching+1, outfd);
 	}
 	return 0;
 }
