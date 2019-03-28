@@ -542,6 +542,7 @@ int main(int argc, char *argv[])
 			default:
 				break;
 			case S_ESCAPE:
+				selected = 0;
 				goto end;
 			case S_BACKSPACE:
 				update = 1;
@@ -581,12 +582,15 @@ int main(int argc, char *argv[])
 			switch (I.utf[0]) {
 			case 'M':
 			case 'J': /* ENTER */
+				if (!selected) {
+					matching[highlight]->selected = 1;
+					selected = 1;
+				}
 				goto end;
 			case 'I': /* TAB */
-				if (highlight) {
-					matching[highlight]->selected = !matching[highlight]->selected;
-					selected += matching[highlight]->selected ? 1 : -1;
-				}
+				matching[highlight]->selected = !matching[highlight]->selected;
+				selected += matching[highlight]->selected ? 1 : -1;
+				view_range_move(matching, view, &highlight, 1);
 				break;
 			}
 			break;
@@ -604,8 +608,7 @@ end:
 	unraw(&old, inputfd);
 	write(drawfd, SL(CSI_CURSOR_SHOW));
 
-	if (!selected && highlight) {
-		dprintf(outfd, "%s\n", matching[highlight]->str);
+	if (!selected) {
 		entry_free(list[0]);
 	}
 	else {
