@@ -3,7 +3,7 @@ LD = musl-gcc
 ERRLVL = -Wall -Wextra -pedantic -Wimplicit-fallthrough=0
 CFLAGS = -std=c99 -g $(ERRLVL)
 LDFLAGS = -static
-TARGET = fisel
+TARGET = selec
 
 all : $(TARGET)
 

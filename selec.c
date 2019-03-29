@@ -467,8 +467,8 @@ int main(int argc, char *argv[])
 	setup_signals();
 
 	/*
-	 * fisel is passed data via stdin.
-	 * Like so: some-command | fisel
+	 * selec is passed data via stdin.
+	 * Like so: some-command | selec
 	 * User input will be available in /dev/tty
 	 */
 	if (isatty(0)) {

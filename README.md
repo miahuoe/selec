@@ -1,4 +1,4 @@
-# fisel
+# selec
 Dynamic (fuzzy) finder similar to [fzf](https://github.com/junegunn/fzf) but very small.
 
 # TODOs
@@ -6,10 +6,12 @@ Dynamic (fuzzy) finder similar to [fzf](https://github.com/junegunn/fzf) but ver
 - Packaging
 - ...
 
+# Pros
+- Can be statically linked
+- Very small
+- Simple
+
 # Cons
 - VERY SLOW
 - Limited
 - Only regex
-
-# Name
-FInd & SELect
