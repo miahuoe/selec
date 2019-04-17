@@ -67,7 +67,7 @@ static int entry_match(entry*, entry**, char*, int);
 static int read_entries(int, entry**, entry**);
 static int str2num(char*, int, int);
 static char* EARG(char***);
-static char *ARG(char***);
+static char* ARG(char***);
 static char* basename(char*);
 static void usage(char*);
 static void setup_signals(void);
@@ -357,24 +357,23 @@ static void view_range_draw(int fd, entry **L, int view[2], int hl, int W, int H
 			dprintf(fd,
 				"\x1b[%c%cm" /* CSI */
 				"\x1b[%c%cm" /* CSI */
-				"%s%c %.*s" /* entry */
+				CSI_CLEAR_LINE
+				"%c %.*s" /* entry */
 				"\x1b[%cm" /* CSI */
 				"\r\n", /* newline */
 				'3', '0',
 				'4', '7',
-				CSI_CLEAR_LINE, ind, b, L[c]->str,
+				ind, b, L[c]->str,
 				'0');
 		}
 		else {
-			dprintf(fd,
-				"%s%c %.*s" "\r\n",
-				CSI_CLEAR_LINE, ind, b, L[c]->str);
+			dprintf(fd, CSI_CLEAR_LINE "%c %.*s\r\n", ind, b, L[c]->str);
 		}
 		c++;
 		H--;
 	}
 	while (H) {
-		dprintf(fd, "%s\r\n", CSI_CLEAR_LINE);
+		dprintf(fd, CSI_CLEAR_LINE "\r\n");
 		H--;
 	}
 }
@@ -517,10 +516,12 @@ int main(int argc, char *argv[])
 		write(drawfd, SL(CSI_CLEAR_LINE));
 
 		d = digits(num);
-		i = dprintf(drawfd, "%*d/%*d/%d > ", d, selected, d, num_matching, num);
-		dprintf(drawfd, "%.*s", utf8_limit_width(E.begin, winw-i), E.begin);
+		i = d+1+d+1+d+3;
+		dprintf(drawfd, "%*d/%*d/%d > %.*s",
+			d, selected, d, num_matching, num,
+			utf8_limit_width(E.begin, winw-i), E.begin);
 
-		set_cur_pos(drawfd, 1+E.cur_x+i, y+list_height);
+		set_cur_pos(drawfd, E.cur_x+i+1, y+list_height);
 
 		write(drawfd, SL(CSI_CURSOR_SHOW));
 		I = get_input(inputfd);
@@ -598,12 +599,11 @@ int main(int argc, char *argv[])
 	}
 end:
 	set_cur_pos(drawfd, x, y);
-	for (i = 0; i < list_height+1; i++) {
-		dprintf(drawfd, "%s", CSI_CLEAR_LINE);
-		if (i != list_height) {
-			dprintf(drawfd, "\r\n");
-		}
+	for (i = 0; i < list_height; i++) {
+		dprintf(drawfd, CSI_CLEAR_LINE "\r\n");
 	}
+	dprintf(drawfd, CSI_CLEAR_LINE);
+
 	set_cur_pos(drawfd, x, y);
 	unraw(&old, inputfd);
 	write(drawfd, SL(CSI_CURSOR_SHOW));
