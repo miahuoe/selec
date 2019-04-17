@@ -77,10 +77,17 @@ static void view_range_draw(int, entry**, int[2], int, int, int);
 static void view_range_move(entry**, int[2], int*, int);
 static void fill_matching(entry*, entry**);
 
-/* Global, because sighandler must be able to resize window */
+/*
+ * Globals
+ * sighandler() must be able to resize window and cleanup on SIG{TERM,INT}
+ */
 static int winw = 0;
 static int winh = 0;
+static int x = 0;
+static int y = 0;
 static int list_height = -1;
+static int drawfd = 2;
+static int inputfd = 0;
 static struct termios old;
 
 static void err(const char *fmt, ...)
@@ -315,6 +322,8 @@ static void setup_signals(void)
 
 static void sighandler(int sig)
 {
+	int i;
+
 	switch (sig) {
 	case SIGWINCH:
 		get_win_dims(2, &winw, &winh);
@@ -322,7 +331,17 @@ static void sighandler(int sig)
 		break;
 	case SIGTERM:
 	case SIGINT:
-		// TODO cleanup
+		/* Cleanup and exit */
+		write(drawfd, SL(CSI_CURSOR_HIDE));
+		set_cur_pos(drawfd, x, y);
+		for (i = 0; i < list_height; i++) {
+			dprintf(drawfd, CSI_CLEAR_LINE "\r\n");
+		}
+		dprintf(drawfd, CSI_CLEAR_LINE);
+
+		set_cur_pos(drawfd, x, y);
+		unraw(&old, inputfd);
+		write(drawfd, SL(CSI_CURSOR_SHOW));
 		exit(EXIT_SUCCESS);
 	default:
 		break;
@@ -418,9 +437,9 @@ static void fill_matching(entry *H, entry **L)
 int main(int argc, char *argv[])
 {
 	char s[4*1024], *argv0;
-	int x, y, d, i;
+	int d, i;
 	int selected = 0, num = 0, num_matching;
-	int inputfd = 0, outfd = 1, drawfd = 2;
+	int outfd = 1;
 	int cflags = REG_ICASE | REG_NEWLINE;
 	_Bool mid = 0, update = 1;
 	edit E;
@@ -581,6 +600,9 @@ int main(int argc, char *argv[])
 			break;
 		case IT_CTRL:
 			switch (I.utf[0]) {
+			case 'C':
+				raise(SIGINT);
+				break;
 			case 'M':
 			case 'J': /* ENTER */
 				if (!selected) {
