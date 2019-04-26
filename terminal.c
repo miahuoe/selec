@@ -236,9 +236,9 @@ static _Bool in(char c, char *S)
 	return *S;
 }
 
-static char tread1(char *c, int fd)
+static char tread1(char *c, int fd, suseconds_t to)
 {
-	if (1 == tread(fd, c, 1, 125000)) return *c;
+	if (1 == tread(fd, c, 1, to)) return *c;
 	return 0;
 }
 
@@ -262,22 +262,31 @@ special_type which_key(char *seq)
 input get_input(int fd)
 {
 	input i;
+	suseconds_t t = 125000;
 	int utflen, b;
 	char seq[8] = { 0 };
 
 	memset(&i, 0, sizeof(i));
 	if (read1(seq, fd) == 0) {
-		i.t = IT_EOF;
+		i.t = IT_NONE;
 	}
 	else if (seq[0] == '\x1b') {
 		retry:
-		if (tread1(seq+1, fd) && in(seq[1], "[O")) {
+		if (tread1(seq+1, fd, t) && in(seq[1], "[O")) {
 			if (read1(seq+2, fd) && in(seq[2], "0123456789")) {
 				read1(seq+3, fd);
+			}
+			else {
+				i.t = IT_NONE;
+				return i;
 			}
 		}
 		else if (seq[1] == '\x1b') {
 			goto retry; /* Fixes fast-esc bug. But is it a good solution? */
+		}
+		else {
+			i.t = IT_NONE;
+			return i;
 		}
 		i.t = IT_SPEC;
 		i.s = which_key(seq);
