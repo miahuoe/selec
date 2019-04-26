@@ -578,9 +578,11 @@ int main(int argc, char *argv[])
 			case S_PAGE_DOWN:
 				view_range_move(matching, view, &highlight, list_height);
 				break;
+			CASE_ONE_UP:
 			case S_ARROW_UP:
 				view_range_move(matching, view, &highlight, -1);
 				break;
+			CASE_ONE_DOWN:
 			case S_ARROW_DOWN:
 				view_range_move(matching, view, &highlight, 1);
 				break;
@@ -600,6 +602,13 @@ int main(int argc, char *argv[])
 			break;
 		case IT_CTRL:
 			switch (I.utf[0]) {
+			case 'N':
+				goto CASE_ONE_DOWN;
+			case 'P':
+				goto CASE_ONE_UP;
+			case 'D':
+				selected = 0;
+				goto end;
 			case 'C':
 				raise(SIGINT);
 				break;
