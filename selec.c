@@ -304,6 +304,7 @@ static void usage(char *argv0)
 	dprintf(2, "Usage: %s [options]\n", basename(argv0));
 	dprintf(2,
 	"Options:\n"
+	"    -L N   Set maximal number of lines.\n"
 	"    -E     Use extended regex.\n"
 	"    -i     Case sensitive.\n"
 	"    -h     Display this help message and exit.\n");
