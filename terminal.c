@@ -262,7 +262,7 @@ special_type which_key(char *seq)
 input get_input(int fd)
 {
 	input i;
-	suseconds_t t = 125000;
+	suseconds_t t = 250000;
 	int utflen, b;
 	char seq[8] = { 0 };
 
@@ -276,6 +276,8 @@ input get_input(int fd)
 			if (read1(seq+2, fd) && in(seq[2], "0123456789")) {
 				read1(seq+3, fd);
 			}
+			else if (in(seq[2], "ABCDHFPVUY")) {
+			}
 			else {
 				i.t = IT_NONE;
 				return i;
@@ -285,7 +287,8 @@ input get_input(int fd)
 			goto retry; /* Fixes fast-esc bug. But is it a good solution? */
 		}
 		else {
-			i.t = IT_NONE;
+			i.t = IT_SPEC;
+			i.s = S_ESCAPE;
 			return i;
 		}
 		i.t = IT_SPEC;
