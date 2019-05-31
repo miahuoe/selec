@@ -1,7 +1,7 @@
 CC = musl-gcc
 LD = musl-gcc
 ERRLVL = -Wall -Wextra -pedantic -Wimplicit-fallthrough=0
-CFLAGS = -std=c99 -g $(ERRLVL)
+CFLAGS = -std=c99 $(ERRLVL)
 LDFLAGS = -static
 TARGET = selec
 
